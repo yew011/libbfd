@@ -1,0 +1,112 @@
+BFD GENERIC LIBRARY API:
+
+#define BFD_VERSION 1
+#define ETH_ADDR_LEN 6
+
+enum flags {
+    FLAG_MULTIPOINT = 1 << 0,
+    FLAG_DEMAND = 1 << 1,
+    FLAG_AUTH = 1 << 2,
+    FLAG_CTL = 1 << 3,
+    FLAG_FINAL = 1 << 4,
+    FLAG_POLL = 1 << 5
+};
+
+enum state {
+    STATE_ADMIN_DOWN = 0 << 6,
+    STATE_DOWN = 1 << 6,
+    STATE_INIT = 2 << 6,
+    STATE_UP = 3 << 6
+};
+
+enum diag {
+    DIAG_NONE = 0,                /* No Diagnostic. */
+    DIAG_EXPIRED = 1,             /* Control Detection Time Expired. */
+    DIAG_ECHO_FAILED = 2,         /* Echo Function Failed. */
+    DIAG_RMT_DOWN = 3,            /* Neighbor Signaled Session Down. */
+    DIAG_FWD_RESET = 4,           /* Forwarding Plane Reset. */
+    DIAG_PATH_DOWN = 5,           /* Path Down. */
+    DIAG_CPATH_DOWN = 6,          /* Concatenated Path Down. */
+    DIAG_ADMIN_DOWN = 7,          /* Administratively Down. */
+    DIAG_RCPATH_DOWN = 8          /* Reverse Concatenated Path Down. */
+};
+
+struct bfd {
+    /* Local state variables. */
+    uint32_t disc;                /* bfd.LocalDiscr. */
+    uint8_t mult;                 /* bfd.DetectMult. */
+    enum state state;             /* bfd.SessionState. */
+    enum diag diag;               /* bfd.LocalDiag. */
+    enum flags flags;             /* Flags sent on messages. */
+    uint32_t min_tx;              /* bfd.DesiredMinTxInterval. */
+    uint32_t min_rx;              /* bfd.RequiredMinRxInterval. */
+    uint32_t cfg_min_tx;          /* Configured minimum TX rate. */
+    uint32_t cfg_min_rx;          /* Configured required minimum RX rate. */
+    long long int detect_time;    /* RFC 5880 6.8.4 Detection time. */
+    long long int last_tx;        /* Last TX time. */
+    long long int next_tx;        /* Next TX time. */
+
+    /* Remote side state variables. */
+    uint32_t rmt_disc;            /* bfd.RemoteDiscr. */
+    enum state rmt_state;         /* bfd.RemoteSessionState. */
+    enum diag rmt_diag;           /* Remote diagnostic. */
+    enum flags rmt_flags;         /* Flags last received. */
+    long long int rmt_min_rx;     /* bfd.RemoteMinRxInterval. */
+    long long int rmt_min_tx;     /* Remote minimum TX interval. */
+
+
+    /* For composing bfd control packet. */
+    uint8_t eth_src[ETH_ADDR_LEN];/* Ethernet source address. */
+    uint8_t eth_dst[ETH_ADDR_LEN];/* Ethernet destination address. */
+    ovs_be32 ip_src;              /* IPv4 source address. */
+    ovs_be32 ip_dst;              /* IPv4 destination address. */
+    uint16_t udp_src;             /* UDP source port. */
+};
+
+/* Configures bfd session.  If bfd is NULL, creates a new session. */
+struct bfd* bfd_configure(struct bfd *bfd, struct bfd *bfd_request);
+
+/* Ref/deref a bfd. */
+struct bfd *bfd_ref(const struct bfd *bfd );
+void bfd_unref(struct bfd *bfd);
+
+/* Returns the earliest wakeup time among bfd session. */
+long long int bfd_next_wake_up(void);
+
+/* Given current time 'now', dumps one bfd session that already
+ * timed out.  Can be used in a loop to dump multiple timed out
+ * bfd sessions. */
+struct bfd* bfd_dump_timeout(long long int now);
+
+/* Updates the bfd sessions status. */
+void bfd_run(struct bfd *bfd);
+/* Updates the wakeup time of 'bfd'. */
+void bfd_wait(struct bfd *bfd);
+
+/* For send/recv bfd control packets. */
+bool bfd_should_send_packet(const struct bfd *);
+void bfd_put_packet(struct bfd *bfd, void *payload, size_t *length);
+bool bfd_should_process_packet(const struct bfd *, void *header);
+void bfd_process_packet(struct bfd *, void *payload, size_t length);
+
+/* Returns if the bfd session is alive or not.
+ * Equivalent to bfd_forwarding() in ovs bfd module. */
+bool bfd_alive(struct bfd *);
+
+/* Queries the bfd seesion's status, fills in the bfd_reply. */
+void bfd_get_status(const struct bfd *, struct bfd *bfd_reply);
+
+
+
+
+/* NOTES:
+ * - in bfd.c, there should be a global hash map and a global heap.  hash map
+     is used to store all bfd sessions and guarantee uniqueness of the bfd
+     descriminator.  heap is used to order the bfd sessions based on the wake
+     up time for dumping.
+ * - for hash map / heap operation, the 'struct bfd' variable will be wrapped
+     in 'struct bfd_node' which contains the hash node, heap node and pointer
+     to 'struct bfd'.
+ * - mutex will be added to guarantee the thread safety.
+ * - need to figure out how to parse the packet.
+ */
