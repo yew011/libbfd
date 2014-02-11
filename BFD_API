@@ -63,39 +63,54 @@ struct bfd {
     uint16_t udp_src;             /* UDP source port. */
 };
 
-/* Configures bfd session.  If bfd is NULL, creates a new session. */
+/* Configures bfd session using the 'bfd_request.  If bfd is NULL,
+ * creates a new session. */
 struct bfd* bfd_configure(struct bfd *bfd, struct bfd *bfd_request);
 
-/* Ref/deref a bfd. */
+/* References/dereferences a bfd.  The function keeps record of the
+ * references to 'bfd'.  If the reference becomes 0, deletes the
+ * 'bfd'. */
 struct bfd *bfd_ref(const struct bfd *bfd );
 void bfd_unref(struct bfd *bfd);
 
-/* Returns the earliest wakeup time among bfd session. */
+/* Returns the earliest wakeup time among all bfd sessions.
+ * This is for registering the wakeup timer in user's poll loop. */
 long long int bfd_next_wake_up(void);
 
-/* Given current time 'now', dumps one bfd session that already
+/* Given current time 'now', dumps one bfd session that has already
  * timed out.  Can be used in a loop to dump multiple timed out
  * bfd sessions. */
 struct bfd* bfd_dump_timeout(long long int now);
 
-/* Updates the bfd sessions status. */
+/* Updates the bfd sessions status. e.g. bfd rx timeout.
+ * Also, calculates and updates the next wakeup time of 'bfd'. */
 void bfd_run(struct bfd *bfd);
-/* Updates the wakeup time of 'bfd'. */
-void bfd_wait(struct bfd *bfd);
-
-/* For send/recv bfd control packets. */
-bool bfd_should_send_packet(const struct bfd *);
-void bfd_put_packet(struct bfd *bfd, void *payload, size_t *length);
-bool bfd_should_process_packet(const struct bfd *, void *header);
-void bfd_process_packet(struct bfd *, void *payload, size_t length);
 
 /* Returns if the bfd session is alive or not.
  * Equivalent to bfd_forwarding() in ovs bfd module. */
 bool bfd_alive(struct bfd *);
 
-/* Queries the bfd seesion's status, fills in the bfd_reply. */
+/* Queries the bfd seesion's status, the function will fill in the
+ * 'bfd_reply'. */
 void bfd_get_status(const struct bfd *, struct bfd *bfd_reply);
 
+/* For send/recv bfd control packets. */
+/* Returns true if the bfd control packet should be sent.
+ * e.g. tx timeout or POLL flag is on. */
+bool bfd_should_send_packet(const struct bfd *);
+
+/* Construct the bfd packet in payload.  After finishes, returns the
+ * size of the new payload in 'length'. */
+void bfd_put_packet(struct bfd *bfd, void *payload, size_t *length);
+
+/* Given the packet header, decides if it is a bfd control packet
+ * that should be processed by 'bfd'. */
+bool bfd_should_process_packet(const struct bfd *, void *header,
+                               size_t *length);
+
+/* Processes the bfd control packet in payload.  The payload length is
+ * provided. */
+void bfd_process_packet(struct bfd *, void *payload, size_t length);
 
 
 
@@ -105,8 +120,10 @@ void bfd_get_status(const struct bfd *, struct bfd *bfd_reply);
      descriminator.  heap is used to order the bfd sessions based on the wake
      up time for dumping.
  * - for hash map / heap operation, the 'struct bfd' variable will be wrapped
-     in 'struct bfd_node' which contains the hash node, heap node and pointer
-     to 'struct bfd'.
- * - mutex will be added to guarantee the thread safety.
- * - need to figure out how to parse the packet.
+     in 'struct bfd_node' which contains the hash node, heap node, pointer
+     to 'struct bfd' and a per-node mutex.
+ * - global (writer biased) rwlock will be used to protect the heap and hash
+     map.  the global rwlock will always be taken after the per-node mutex to
+     prevent deadlock.
+ * - include the "heap.{c,h}", "hmap.{c,h}" and "packet.{c,h}".
  */
