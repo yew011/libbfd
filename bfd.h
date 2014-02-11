@@ -1,4 +1,24 @@
-BFD GENERIC LIBRARY API:
+/* Copyright (c) 2014 Nicira, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at:
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License. */
+
+#ifndef BFD_H
+#define BFD_H 1
+
+#include <linux/types.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #define BFD_VERSION 1
 #define BFD_PACKET_LEN 24
@@ -110,7 +130,7 @@ struct bfd_status {
     uint64_t flap_count;          /* Flap count of forwarding. */
 };
 
-/* A BFD session.  User is not permitted to directly access the variable
+/* A BFD session.  Users are not permitted to directly access the variable
  * of this struct.  For BFD configuration, use the bfd_configure().  For
  * BFD status extraction, use the bfd_get_status(). */
 struct bfd {
@@ -161,194 +181,26 @@ struct bfd {
     uint64_t flap_count;          /* Counts bfd forwarding flaps. */
 };
 
-/* Configures bfd using the 'setting'.  Returns 0 if successful, a positive
- * error number otherwise. */
 enum bfd_error bfd_configure(struct bfd *, const struct bfd_setting *);
-
-/* Returns the wakeup time of the bfd session. */
 long long int bfd_wait(const struct bfd *);
 
-/* Updates the bfd sessions status.  Checks decay and forward_if_rx.
- * Initiates the POLL sequence if needed. */
 void bfd_run(struct bfd *, long long int now);
-
-/* Queries the 'bfd''s status, the function will fill in the
- * 'bfd_status'. */
-void bfd_get_status(const struct bfd *, struct bfd_status *)
-
-/* Returns true if the interface on which bfd is running may be used to
- * forward traffic according to the BFD session state.  'now' is the
- * current time in milliseconds. */
+void bfd_get_status(const struct bfd *, struct bfd_status *);
 bool bfd_forwarding(const struct bfd *, long long int now);
+void bfd_account_rx(struct bfd *, uint32_t n_pkt);
 
-/* Sets the corresponding flags to indicate that packet
- * is received from this monitored interface. */
-void bfd_account_rx(struct bfd *bfd, uint32_t n_pkt);
-
-
-/* For send/recv bfd control packets. */
-/* Returns true if the bfd control packet should be sent for this bfd
- * session.  e.g. tx timeout or POLL flag is on.  'now' is the current
- * time in milliseconds. */
 bool bfd_should_send_packet(const struct bfd *, long long int now);
-
-/* Constructs the bfd packet in payload.  This function assumes that the
- * payload is properly aligned.  'now' is the current time in milliseconds. */
-enum bfd_error bfd_put_packet(struct bfd *, void *p, size_t len,
+enum bfd_error bfd_put_packet(struct bfd *, void *, size_t len,
                               long long int now);
-
-/* Given the packet header entries, check if the packet is bfd control
- * packet. */
 bool bfd_should_process_packet(const __be16 eth_type, const uint8_t ip_proto,
-                               const __be16 udp_src);
+                               const __be16 udp_dst);
+enum bfd_error bfd_process_packet(struct bfd *, void *, size_t len,
+                                  long long now);
 
-/* Processes the bfd control packet in payload 'p'.  The payload length is
- * provided.  'now' is the current time in milliseoncds. */
-enum bfd_error bfd_process_packet(struct bfd *, void *p, size_t len,
-                                  long long int now);
-
-
-/* Helpers*/
-/* Converts the bfd error code to string. */
-char * bfd_error_to_str(enum bfd_error error);
-
-/* Converts the bfd flags to string. */
+/* Helpers. */
+const char * bfd_error_to_str(enum bfd_error error);
 const char * bfd_flag_to_str(enum bfd_flags flags);
-
-/* Converts the bfd state code to string. */
 const char * bfd_state_to_str(enum bfd_state state);
-
-/* Converts the bfd diag to string. */
 const char * bfd_diag_to_str(enum bfd_diag diag);
 
-
-
-/*
- * libbfd API
- *
- * This API implements the basic BFD （bidirectional forwarding detection
- * state machine.  The user should notice the following issues:
- *
- * 1. The libbfd does not handle 'struct bfd' creation.  All API functions
- *    expect user to pass in a pointer of pre-allocated 'struct bfd'.
- *
- * 2. The bfd_put_packet() only constructs the bfd message as defined in
- *    'struct bfd_msg‘.  User is responsible for adding the headers of
- *    all layers.
- *
- * 3. The libbfd does not provide any multithreading protection.  User is
- *    responsible for using mutex or rwlock in multi access.
- *
- *
- * Open Vswitch specific features:
- *
- *   - cpath_down:
- *
- *     Please refer to RFC 5880 for the function of cpath_down.  This feature
- *     is used by gateways to indicate HVs to failover.
- *
- *   - bfd_account_rx():
- *
- *     The function is used to account the receiving of packet on the bfd
- *     monitored interface.  For example, OVS has tx/rx_counter for each
- *     interface.  Whenever the tx/rx_counter are updated, if bfd is used,
- *     the bfd_account_rx() will be called.
- *
- *   - decay_min_rx:
- *
- *     When there is no or very few packets received during the 'decay_min_rx'
- *     amount of time, the 'bfd.min_rx' is set to 'decay_min_rx' to slow down
- *     the peer end's sending rate and thuly reduce the cpu utilization.
- *
- *     Here, 'no or very few packets' means:
- *     '2 * (bfd->decay_min_rx / bfd->min_rx + 1)' or two times the expected
- *     number of control packets.
- *
- *     User must guarantee that the bfd_account_rx() is called at least once
- *     every 'decay_min_rx' amount of time.  Otherwise, the 'bfd->min_rx'
- *     could flap between the two values.
- *
- *   - forwarding flag:
- *
- *     In OVS, the tunnel liveness is indicated by the forwarding flag.
- *     Please check the bfd_forwarding__() function for details.
- *
- *   - forwarding_override:
- *
- *     For testing purpose, '1' means forwarding flag will always be true,
- *     and '0' the opposite.
- *
- *   - forwarding_if_rx_interval:
- *
- *     This feature is very similar to BFD demand mode, except the bfd will
- *     keep the control packet transmission.  If there are packets received
- *     in the 'forwarding_if_rx_interval' amount of time, the forwarding flag
- *     will be true even though the bfd.state is STATE_DOWN (e.g. due to
- *     congestion).
- *
- *     User must guarantee that bfd_account_rx() is called at least once
- *     every 'forward_if_rx_interval' amount of time.  Otherwise, the
- *     bfd.forwarding value will flap.
- *
- *   - flap_count:
- *
- *     Counts the bfd.forwarding (tunnel liveness) value flaps.  Please check
- *     the bfd_check_forwarding_flap() for details.
- *
- *
- * How to use the API:
- *
- *   - Control loop:
- *
- *     Control loop needs to call bfd_run() constantly (or periodically) to
- *     check for control message detection timeout.  Also, to get the wakeup
- *     time of sending bfd control message, the bfd_wait() function should
- *     be invoked.
- *
- *   - Sending loop:
- *
- *     Sending loop should iterate over all bfd sessions (or more efficiently,
- *     only the timeout sessions) and call bfd_should_send_packet().  If true,
- *     bfd_put_packet() should be invoked to get the 'struct bfd_msg', which
- *     will be encapsulated in headers and sent out.
- *
- *   - Receiving loop:
- *
- *     Upon receiving the packet, bfd_should_process_packet() should be called.
- *     If returns true, use bfd_process_packet() to process the packet.
- *
- *
- * Example Pseudocode:
- *
- *   - Control + Sending Loop:
- *
- *     /* In OVS, the control loop and sending loop are combined.
- *        And a monitor thread is in charge of it. */
- *     mutex_lock();
- *     while (bfd = heap_peak_timeout_bfd(heap, now)) {
- *         bfd_run();
- *         /* This check is necessary, sometime, we wakeup just to
- *          * update bfd_decay. */
- *         if (bfd_should_send_packet) {
- *             bfd_put_packet(bfd, msg);
- *             ovs_ofproto_make_packet(pkt, msg);
- *             ovs_ofproto_send_packet(pkt);
- *         }
- *
- *         next_wakeup = bfd_wait(bfd);
- *         /* Re-heapify based on next_wakeup. */
- *         heap_udpate_wakeup_bfd(bdf, next_wakeup);
- *     }
- *     mutex_unlock();
- *
- *   - Receiving Loop:
- *
- *     /* In OVS, bfd packet is handled by handler threads*/
- *     mutex_lock();
- *     bfd = interface->bfd;
- *     if (bfd_should_process_packet(pkt->eth, pkt->ipproto, pkt->tp_dst)) {
- *         bfd_process_packet(bfd, pkt);
- *     }
- *     mutex_unlock();
- *
- */
+#endif /* bfd.h */
