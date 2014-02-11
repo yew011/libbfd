@@ -1,7 +1,35 @@
-BFD GENERIC LIBRARY API:
+/* Copyright (c) 2014 Nicira, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at:
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License. */
+
+#ifndef BFD_H
+#define BFD_H 1
+
+#include <linux/types.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #define BFD_VERSION 1
 #define BFD_PACKET_LEN 24
+
+#define VERS_SHIFT 5
+#define DIAG_MASK 0x1f
+#define STATE_MASK 0xC0
+#define FLAGS_MASK 0x3f
+
+#define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
+#define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
 
 enum bfd_flags {
     FLAG_MULTIPOINT = 1 << 0,
@@ -87,39 +115,18 @@ struct bfd {
     uint32_t poll_min_rx;         /* min_rx in POLL sequence. */
 };
 
-/* Configures bfd using the 'setting'.  Returns 0 if successful, a positive
- * error number otherwise. */
-enum bfd_error bfd_configure(struct bfd_session *, const struct bfd_setting *);
-
-/* Returns the wakeup time of the bfd session. */
+enum bfd_error bfd_configure(struct bfd *, const struct bfd_setting *);
 long long int bfd_wait(const struct bfd *);
 
-/* Updates the bfd sessions status. e.g. bfd rx timeout and the
- * need for POLL sequence.  'now' is the current time in milliseconds. */
 void bfd_run(struct bfd *, long long int now);
+void bfd_get_status(const struct bfd *, struct bfd_status *);
 
-/* Queries the 'bfd''s status, the function will fill in the
- * 'bfd_status'. */
-void bfd_get_status(const struct bfd *, struct bfd_status *)
-
-
-/* For send/recv bfd control packets. */
-/* Returns true if the bfd control packet should be sent for this bfd
- * session.  e.g. tx timeout or POLL flag is on.  'now' is the current
- * time in milliseconds. */
 bool bfd_should_send_packet(const struct bfd *, long long int now);
-
-/* Constructs the bfd packet in payload.  This function assumes that the
- * payload is properly aligned.  'now' is the current time in milliseconds. */
-enum bfd_error bfd_put_packet(struct bfd *, void *p, size_t len,
+enum bfd_error bfd_put_packet(struct bfd *, void *, size_t len,
                               long long int now);
-
-/* Given the packet header entries, check if the packet is bfd control
- * packet. */
 bool bfd_should_process_packet(const __be16 eth_type, const uint8_t ip_proto,
-                               const __be16 udp_src);
+                               const __be16 udp_dst);
+enum bfd_error bfd_process_packet(struct bfd *, void *, size_t len,
+                                  long long now);
 
-/* Processes the bfd control packet in payload 'p'.  The payload length is
- * provided.  'now' is the current time in milliseoncds. */
-enum bfd_error bfd_process_packet(struct bfd *, void *p, size_t len,
-                                  long long int now);
+#endif /* bfd.h */
