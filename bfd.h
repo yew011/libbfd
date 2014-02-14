@@ -28,8 +28,33 @@
 #define STATE_MASK 0xC0
 #define FLAGS_MASK 0x3f
 
-#define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
-#define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
+/* RFC 5880 Section 4.1
+ *  0                   1                   2                   3
+ *  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |Vers |  Diag   |Sta|P|F|C|A|D|M|  Detect Mult  |    Length     |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |                       My Discriminator                        |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |                      Your Discriminator                       |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |                    Desired Min TX Interval                    |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |                   Required Min RX Interval                    |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |                 Required Min Echo RX Interval                 |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+ */
+struct bfd_msg {
+    uint8_t vers_diag;    /* Version and diagnostic. */
+    uint8_t flags;        /* 2bit State field followed by flags. */
+    uint8_t mult;         /* Fault detection multiplier. */
+    uint8_t length;       /* Length of this BFD message. */
+    __be32 my_disc;       /* My discriminator. */
+    __be32 your_disc;     /* Your discriminator. */
+    __be32 min_tx;        /* Desired minimum tx interval. */
+    __be32 min_rx;        /* Required minimum rx interval. */
+    __be32 min_rx_echo;   /* Required minimum echo rx interval. */
+};
 
 enum bfd_flags {
     FLAG_MULTIPOINT = 1 << 0,
@@ -64,7 +89,7 @@ enum bfd_error {
     BFD_EINVAL = 1,               /* Invalid arguments. */
     BFD_EPOLL = 2,                /* bfd poll and final flags are both on. */
     BFD_EMSG = 3                  /* bfd control packet error. */
-}
+};
 
 /* Used to configure a BFD session. */
 struct bfd_setting {
@@ -73,15 +98,36 @@ struct bfd_setting {
     uint8_t mult;                 /* bfd.DetectMult. */
     uint32_t min_tx;              /* bfd.DesiredMinTxInterval. */
     uint32_t min_rx;              /* bfd.RequiredMinRxInterval. */
+
+    /* Open Vswitch specific settings. */
+    bool cpath_down;              /* Set Concatenated Path Down. */
+    bool forwarding_override;     /* Manual override of 'forwarding' status. */
+    int forward_if_rx_interval;   /* How often to detect forward_if_rx. */
+    int decay_min_rx;             /* bfd.min_rx is set to decay_min_rx when */
+                                  /* in decay. */
 };
 
 /* BFD status. */
 struct bfd_status {
     bool forwarding;              /* The liveness of bfd session. */
-    enum state local_state;       /* bfd.SessionState. */
-    enum diag local_diag;         /* bfd.LocalDiag. */
-    enum state rmt_state;         /* bfd.RemoteSessionState. */
-    enum diag rmt_diag;           /* Remote diagnostic. */
+    uint8_t mult;                 /* bfd.DetectMult. */
+    bool cpath_down;              /* If cpath_down enabled. */
+    uint32_t tx_interval;         /* tx interval in use. */
+    uint32_t rx_interval;         /* rx interval in use. */
+
+    uint32_t local_min_tx;        /* bfd.DesiredMinTxInterval */
+    uint32_t local_min_rx;        /* bfd.DesiredMinRxInterval*/
+    enum bfd_flags local_flags;   /* Flags sent on messages. */
+    enum bfd_state local_state;   /* bfd.SessionState. */
+    enum bfd_diag local_diag;     /* bfd.LocalDiag. */
+
+    uint32_t rmt_min_tx;          /* bfd.RemoteMinTxInterval */
+    uint32_t rmt_min_rx;          /* bfd.RemoteMinRxInterval*/
+    enum bfd_flags rmt_flags;     /* Flags last received. */
+    enum bfd_state rmt_state;     /* bfd.RemoteSessionState. */
+    enum bfd_diag rmt_diag;       /* Remote diagnostic. */
+
+    uint64_t flap_count;          /* Flap count of forwarding. */
 };
 
 /* A BFD session.  Users are not permitted to directly access the variable
@@ -91,9 +137,9 @@ struct bfd {
     /* Local state variables. */
     uint32_t disc;                /* bfd.LocalDiscr. */
     uint8_t mult;                 /* bfd.DetectMult. */
-    enum state state;             /* bfd.SessionState. */
-    enum diag diag;               /* bfd.LocalDiag. */
-    enum flags flags;             /* Flags sent on messages. */
+    enum bfd_state state;         /* bfd.SessionState. */
+    enum bfd_diag diag;           /* bfd.LocalDiag. */
+    enum bfd_flags flags;         /* Flags sent on messages. */
     uint32_t min_tx;              /* bfd.DesiredMinTxInterval. */
     uint32_t min_rx;              /* bfd.RequiredMinRxInterval. */
     uint32_t cfg_min_tx;          /* Configured minimum TX rate. */
@@ -104,15 +150,35 @@ struct bfd {
 
     /* Remote side state variables. */
     uint32_t rmt_disc;            /* bfd.RemoteDiscr. */
-    enum state rmt_state;         /* bfd.RemoteSessionState. */
-    enum diag rmt_diag;           /* Remote diagnostic. */
-    enum flags rmt_flags;         /* Flags last received. */
+    enum bfd_state rmt_state;     /* bfd.RemoteSessionState. */
+    enum bfd_diag rmt_diag;       /* Remote diagnostic. */
+    enum bfd_flags rmt_flags;     /* Flags last received. */
     long long int rmt_min_rx;     /* bfd.RemoteMinRxInterval. */
     long long int rmt_min_tx;     /* Remote minimum TX interval. */
 
     /* POLL sequence. */
     uint32_t poll_min_tx;         /* min_tx in POLL sequence. */
     uint32_t poll_min_rx;         /* min_rx in POLL sequence. */
+
+    /* Open Vswitch specific features. */
+    bool cpath_down;              /* Set Concatenated Path Down. */
+
+    int forwarding_override;      /* Manual override of 'forwarding' status. */
+
+    /* Equivalent to bfd demand mode. */
+    bool last_forwarding;         /* Last calculation of forwarding flag. */
+    int forward_if_rx_interval;   /* How often to detect forward_if_rx. */
+    long long int forward_if_rx_detect_time;
+    bool forward_if_rx_data;      /* Data packet received in last interval. */
+
+    /* BFD decay feature is for reducing the */
+    bool in_decay;                /* True when bfd is in decay. */
+    int decay_min_rx;             /* bfd.min_rx is set to decay_min_rx when */
+                                  /* in decay. */
+    long long int decay_detect_time; /* Next decay detect time. */
+    uint32_t decay_rx_count;      /* Count of data packets received. */
+
+    uint64_t flap_count;          /* Counts bfd forwarding flaps. */
 };
 
 enum bfd_error bfd_configure(struct bfd *, const struct bfd_setting *);
@@ -120,6 +186,8 @@ long long int bfd_wait(const struct bfd *);
 
 void bfd_run(struct bfd *, long long int now);
 void bfd_get_status(const struct bfd *, struct bfd_status *);
+bool bfd_forwarding(const struct bfd *, long long int now);
+void bfd_account_rx(struct bfd *, uint32_t n_pkt);
 
 bool bfd_should_send_packet(const struct bfd *, long long int now);
 enum bfd_error bfd_put_packet(struct bfd *, void *, size_t len,
@@ -128,5 +196,11 @@ bool bfd_should_process_packet(const __be16 eth_type, const uint8_t ip_proto,
                                const __be16 udp_dst);
 enum bfd_error bfd_process_packet(struct bfd *, void *, size_t len,
                                   long long now);
+
+/* Helpers. */
+const char * bfd_error_to_str(enum bfd_error error);
+const char * bfd_flag_to_str(enum bfd_flags flags);
+const char * bfd_state_to_str(enum bfd_state state);
+const char * bfd_diag_to_str(enum bfd_diag diag);
 
 #endif /* bfd.h */

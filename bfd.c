@@ -17,62 +17,74 @@
 #include <arpa/inet.h>
 #include <limits.h>
 #include <stdlib.h>
+#include <string.h>
 
-/* RFC 5880 Section 4.1
- *  0                   1                   2                   3
- *  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
- * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * |Vers |  Diag   |Sta|P|F|C|A|D|M|  Detect Mult  |    Length     |
- * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * |                       My Discriminator                        |
- * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * |                      Your Discriminator                       |
- * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * |                    Desired Min TX Interval                    |
- * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * |                   Required Min RX Interval                    |
- * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- * |                 Required Min Echo RX Interval                 |
- * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+ */
-struct msg {
-    uint8_t vers_diag;    /* Version and diagnostic. */
-    uint8_t flags;        /* 2bit State field followed by flags. */
-    uint8_t mult;         /* Fault detection multiplier. */
-    uint8_t length;       /* Length of this BFD message. */
-    __be32 my_disc;       /* My discriminator. */
-    __be32 your_disc;     /* Your discriminator. */
-    __be32 min_tx;        /* Desired minimum tx interval. */
-    __be32 min_rx;        /* Required minimum rx interval. */
-    __be32 min_rx_echo;   /* Required minimum echo rx interval. */
-};
+#define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
+#define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
 
 
-/* Returns true if the interface on which bfd is running may be used to
- * forward traffic according to the BFD session state. */
 static bool
-bfd_forwarding(const struct bfd *bfd)
+bfd_forwarding__(const struct bfd *bfd, long long int now)
 {
-    return bfd->state == STATE_UP
-        && bfd->rmt_diag != DIAG_PATH_DOWN
-        && bfd->rmt_diag != DIAG_CPATH_DOWN
-        && bfd->rmt_diag != DIAG_RCPATH_DOWN;
+    bool should_forward = false;
+
+    if (bfd->forwarding_override) {
+        return bfd->forwarding_override;
+    }
+
+    if (bfd->forward_if_rx_interval) {
+        if (!bfd->forward_if_rx_detect_time) {
+            should_forward = bfd->state == STATE_UP ? true : false;
+        } else {
+            should_forward = bfd->forward_if_rx_detect_time > now;
+        }
+    }
+
+    return (bfd->state == STATE_UP
+            || (bfd->forward_if_rx_interval && should_forward))
+           && bfd->rmt_diag != DIAG_PATH_DOWN
+           && bfd->rmt_diag != DIAG_CPATH_DOWN
+           && bfd->rmt_diag != DIAG_RCPATH_DOWN;
 }
 
-static bool
-bfd_in_poll(const struct bfd *bfd)
-{
-    return (bfd->flags & FLAG_POLL) != 0;
-}
-
+/* If there is packet received, sets the 'forward_if_rx_detect_time'
+ * to 'forward_if_rx_interval' away from now. */
 static void
-bfd_poll(struct bfd *bfd)
+bfd_forward_if_rx(struct bfd *bfd, long long int now)
 {
-    if (bfd->state > STATE_DOWN && !bfd_in_poll(bfd)
-        && !(bfd->flags & FLAG_FINAL)) {
-        bfd->poll_min_tx = bfd->cfg_min_tx;
-        bfd->poll_min_rx = bfd->cfg_min_rx;
-        bfd->flags |= FLAG_POLL;
-        bfd->next_tx = 0;
+    if (bfd->forward_if_rx_data && bfd->forward_if_rx_interval) {
+        bfd->forward_if_rx_detect_time = bfd->forward_if_rx_interval + now;
+        bfd->forward_if_rx_data = false;
+    }
+}
+
+/* Increments the 'flap_count' if there is a change in the
+ * forwarding flag value. */
+static void
+bfd_check_forwarding_flap(struct bfd *bfd, long long int now)
+{
+    bool last_forwarding = bfd->last_forwarding;
+
+    bfd->last_forwarding = bfd_forwarding__(bfd, now);
+    if (bfd->last_forwarding != last_forwarding) {
+        bfd->flap_count++;
+    }
+}
+
+/* Decays the 'bfd->min_rx' to 'bfd->decay_min_rx' when number of packets
+ * received during the 'decay_min_rx' interval is less than two time
+ * of bfd control packets. */
+static void
+bfd_try_decay(struct bfd *bfd, long long int now)
+{
+    if (bfd->state == STATE_UP && bfd->decay_min_rx
+        && now >= bfd->decay_detect_time) {
+        uint32_t expect_rx = 2 * (bfd->decay_min_rx / bfd->min_rx + 1);
+
+        bfd->in_decay = (bfd->decay_rx_count < expect_rx
+                         && bfd->decay_min_rx > bfd->cfg_min_rx);
+        bfd->decay_detect_time = bfd->decay_min_rx + now;
+        bfd->decay_rx_count = 0;
     }
 }
 
@@ -111,10 +123,14 @@ bfd_set_next_tx(struct bfd *bfd)
 }
 
 static void
-bfd_set_state(struct bfd *bfd, enum bfd_state state, enum bfd_diag diag)
+bfd_set_state(struct bfd *bfd, enum bfd_state state, enum bfd_diag diag,
+              long long int now)
 {
-    if (bfd->state != state || bfd->diag != diag) {
+    if (bfd->cpath_down) {
+        diag = DIAG_CPATH_DOWN;
+    }
 
+    if (bfd->state != state || bfd->diag != diag) {
         bfd->state = state;
         bfd->diag = diag;
 
@@ -126,6 +142,32 @@ bfd_set_state(struct bfd *bfd, enum bfd_state state, enum bfd_diag diag)
             bfd->rmt_disc = 0;
             bfd->rmt_min_tx = 0;
         }
+
+        if (bfd->state != STATE_UP && bfd->in_decay) {
+            bfd->min_rx = bfd->cfg_min_rx;
+            bfd->in_decay = false;
+            bfd->decay_rx_count = UINT32_MAX;
+        }
+    }
+
+    bfd_check_forwarding_flap(bfd, now);
+}
+
+static bool
+bfd_in_poll(const struct bfd *bfd)
+{
+    return (bfd->flags & FLAG_POLL) != 0;
+}
+
+static void
+bfd_poll(struct bfd *bfd)
+{
+    if (bfd->state > STATE_DOWN && !bfd_in_poll(bfd)
+        && !(bfd->flags & FLAG_FINAL)) {
+        bfd->poll_min_tx = bfd->cfg_min_tx;
+        bfd->poll_min_rx = bfd->in_decay ? bfd->decay_min_rx : bfd->cfg_min_rx;
+        bfd->flags |= FLAG_POLL;
+        bfd->next_tx = 0;
     }
 }
 
@@ -137,10 +179,15 @@ bfd_configure(struct bfd *bfd, const struct bfd_setting *setting)
 {
     uint32_t min_tx, min_rx;
     uint8_t mult;
+    bool min_rx_changed = false;
     bool need_poll = false;
 
     if (!bfd || !setting) {
         return BFD_EINVAL;
+    }
+
+    if (bfd->state == STATE_ADMIN_DOWN) {
+        bfd_set_state(bfd, STATE_DOWN, DIAG_NONE, 0);
     }
 
     if (bfd->disc != setting->disc) {
@@ -169,6 +216,30 @@ bfd_configure(struct bfd *bfd, const struct bfd_setting *setting)
             || (!bfd_in_poll(bfd) && bfd->cfg_min_rx > bfd->min_rx)) {
             bfd->min_rx = bfd->cfg_min_rx;
         }
+        min_rx_changed = true;
+        need_poll = true;
+    }
+
+    if (bfd->cpath_down != setting->cpath_down) {
+        bfd->cpath_down = setting->cpath_down;
+        bfd_set_state(bfd, bfd->state, DIAG_NONE, 0);
+        need_poll = true;
+    }
+
+    if (bfd->forwarding_override != setting->forwarding_override) {
+        bfd->forwarding_override = setting->forwarding_override;
+    }
+
+    if (bfd->forward_if_rx_interval != setting->forward_if_rx_interval) {
+        bfd->forward_if_rx_interval = setting->forward_if_rx_interval;
+        bfd->forward_if_rx_detect_time = 0;
+    }
+
+    if (bfd->decay_min_rx != setting->decay_min_rx || min_rx_changed) {
+        bfd->decay_min_rx = setting->decay_min_rx;
+        bfd->in_decay = false;
+        bfd->decay_rx_count = UINT32_MAX;
+        bfd->decay_detect_time = 0;
         need_poll = true;
     }
 
@@ -196,32 +267,45 @@ bfd_wait(const struct bfd *bfd)
         if (bfd->state > STATE_DOWN) {
             ret = MIN(bfd->detect_time, ret);
         }
+        if (bfd->state == STATE_UP) {
+            ret = MIN(bfd->decay_detect_time, ret);
+        }
     }
 
     return ret;
 }
 
-/* Updates the bfd sessions status. e.g. bfd rx timeout.  And checks the
- * need for POLL sequence.  */
+/* Updates the bfd sessions status.  Checks decay and forward_if_rx.
+ * Initiates the POLL sequence if needed. */
 void
 bfd_run(struct bfd *bfd, long long int now)
 {
+    bool old;
+
     if (!bfd) {
         return;
     }
 
     if (bfd->state > STATE_DOWN && now >= bfd->detect_time) {
-        bfd_set_state(bfd, STATE_DOWN, DIAG_EXPIRED);
+        bfd_set_state(bfd, STATE_DOWN, DIAG_EXPIRED, now);
     }
 
+    old = bfd->in_decay;
+    bfd_try_decay(bfd, now);
+
+    bfd_forward_if_rx(bfd, now);
+    bfd_check_forwarding_flap(bfd, now);
+
     if (bfd->min_tx != bfd->cfg_min_tx
-        || bfd->min_rx != bfd->cfg_min_rx) {
+        || (!bfd->in_decay && bfd->min_rx != bfd->cfg_min_rx)
+        || (bfd->in_decay && bfd->min_rx != bfd->decay_min_rx)
+        || bfd->in_decay != old) {
         bfd_poll(bfd);
     }
 }
 
 /* Queries the 'bfd''s status, the function will fill in the
- * 'bfd_status'. */
+ * 'struct bfd_status'. */
 void
 bfd_get_status(const struct bfd *bfd, struct bfd_status *s)
 {
@@ -229,11 +313,48 @@ bfd_get_status(const struct bfd *bfd, struct bfd_status *s)
         return;
     }
 
-    s->forwarding = bfd_forwarding(bfd);
+    s->forwarding = bfd->last_forwarding;
+    s->mult = bfd->mult;
+    s->cpath_down = bfd->cpath_down;
+    s->tx_interval = bfd_tx_interval(bfd);
+    s->rx_interval = bfd_rx_interval(bfd);
+
+    s->local_min_tx = bfd_min_tx(bfd);
+    s->local_min_rx = bfd->min_rx;
+    s->local_flags = bfd->flags;
     s->local_state = bfd->state;
     s->local_diag = bfd->diag;
+
+    s->rmt_min_tx = bfd->rmt_mint_tx;
+    s->rmt_min_rx = bfd->rmt_mint_rx;
+    s->rmt_flags = bfd->rmt_flags;
     s->rmt_state = bfd->rmt_state;
     s->rmt_diag = bfd->rmt_diag;
+
+    s->flap_count = bfd->flap_count;
+}
+
+/* Returns true if the interface on which bfd is running may be used to
+ * forward traffic according to the BFD session state.  'now' is the
+ * current time in milliseconds. */
+bool
+bfd_forwarding(const struct bfd *bfd, long long int now)
+{
+    return bfd_forwarding__(bfd, now);
+}
+
+/* Sets the corresponding flags to indicate that packet
+ * is received from this monitored interface. */
+void
+bfd_account_rx(struct bfd *bfd, uint32_t n_pkt)
+{
+    if (bfd->forward_if_rx_interval && n_pkt) {
+        bfd->forward_if_rx_data = true;
+    }
+
+    if (bfd->decay_min_rx) {
+        bfd->decay_rx_count += n_pkt;
+    }
 }
 
 /* For send/recv bfd control packets. */
@@ -251,7 +372,7 @@ enum bfd_error
 bfd_put_packet(struct bfd *bfd, void *p, size_t len, long long int now)
 {
     long long int min_tx, min_rx;
-    struct msg *msg = p;
+    struct bfd_msg *msg = p;
 
     if (!bfd || !p || len < BFD_PACKET_LEN) {
         return BFD_EINVAL;
@@ -312,7 +433,7 @@ bfd_process_packet(struct bfd *bfd, void *p, size_t len, long long int now)
     enum bfd_state rmt_state;
     enum bfd_flags flags;
     uint8_t version;
-    struct msg *msg = p;
+    struct bfd_msg *msg = p;
 
     if (!bfd || !p || len < BFD_PACKET_LEN) {
         return BFD_EINVAL;
@@ -413,25 +534,25 @@ bfd_process_packet(struct bfd *bfd, void *p, size_t len, long long int now)
 
     if (rmt_state == STATE_ADMIN_DOWN) {
         if (bfd->state != STATE_DOWN) {
-            bfd_set_state(bfd, STATE_DOWN, DIAG_RMT_DOWN);
+            bfd_set_state(bfd, STATE_DOWN, DIAG_RMT_DOWN, now);
         }
     } else {
         switch (bfd->state) {
         case STATE_DOWN:
             if (rmt_state == STATE_DOWN) {
-                bfd_set_state(bfd, STATE_INIT, bfd->diag);
+                bfd_set_state(bfd, STATE_INIT, bfd->diag, now);
             } else if (rmt_state == STATE_INIT) {
-                bfd_set_state(bfd, STATE_UP, bfd->diag);
+                bfd_set_state(bfd, STATE_UP, bfd->diag, now);
             }
             break;
         case STATE_INIT:
             if (rmt_state > STATE_DOWN) {
-                bfd_set_state(bfd, STATE_UP, bfd->diag);
+                bfd_set_state(bfd, STATE_UP, bfd->diag, now);
             }
             break;
         case STATE_UP:
             if (rmt_state <= STATE_DOWN) {
-                bfd_set_state(bfd, STATE_DOWN, DIAG_RMT_DOWN);
+                bfd_set_state(bfd, STATE_DOWN, DIAG_RMT_DOWN, now);
             }
             break;
         case STATE_ADMIN_DOWN:
@@ -445,4 +566,87 @@ out:
 
 err:
     return BFD_EMSG;
+}
+
+/* Helpers. */
+/* Converts the bfd error code to string. */
+const char *
+bfd_error_to_str(enum bfd_error error)
+{
+    switch (error) {
+    case BFD_PASS: return "No Error";
+    case BFD_EINVAL: return "Invalid Arguments";
+    case BFD_EPOLL: return "Both POLL And FINAL Set";
+    case BFD_EMSG: return "Bad Control Packet";
+    default: return "Not An Error Code";
+    }
+}
+
+/* Converts the bfd flags to string. */
+const char *
+bfd_flag_to_str(enum bfd_flags flags)
+{
+    static char flag_str[128];
+
+    if (!flags) {
+        return "none";
+    }
+
+    memset(flag_str, 0, sizeof *flag_str);
+
+    if (flags & FLAG_MULTIPOINT) {
+        strcat(flag_str, "multipoint ");
+    }
+
+    if (flags & FLAG_DEMAND) {
+        strcat(flag_str, "demand ");
+    }
+
+    if (flags & FLAG_AUTH) {
+        strcat(flag_str, "auth");
+    }
+
+    if (flags & FLAG_CTL) {
+        strcat(flag_str, "ctl");
+    }
+
+    if (flags & FLAG_FINAL) {
+        strcat(flag_str, "final");
+    }
+
+    if (flags & FLAG_POLL) {
+        strcat(flag_str, "poll");
+    }
+
+    return flag_str;
+}
+
+/* Converts the bfd state code to string. */
+const char *
+bfd_state_to_str(enum bfd_state state)
+{
+    switch (state) {
+    case STATE_ADMIN_DOWN: return "admin_down";
+    case STATE_DOWN: return "down";
+    case STATE_INIT: return "init";
+    case STATE_UP: return "up";
+    default: return "invalid";
+    }
+}
+
+/* Converts the bfd diag to string. */
+const char *
+bfd_diag_to_str(enum bfd_diag diag) {
+    switch (diag) {
+    case DIAG_NONE: return "No Diagnostic";
+    case DIAG_EXPIRED: return "Control Detection Time Expired";
+    case DIAG_ECHO_FAILED: return "Echo Function Failed";
+    case DIAG_RMT_DOWN: return "Neighbor Signaled Session Down";
+    case DIAG_FWD_RESET: return "Forwarding Plane Reset";
+    case DIAG_PATH_DOWN: return "Path Down";
+    case DIAG_CPATH_DOWN: return "Concatenated Path Down";
+    case DIAG_ADMIN_DOWN: return "Administratively Down";
+    case DIAG_RCPATH_DOWN: return "Reverse Concatenated Path Down";
+    default: return "Invalid Diagnostic";
+    }
 }
