@@ -1,5 +1,6 @@
 libbfd
 ======
+<pre>
 BFD GENERIC LIBRARY API:
 
 #define BFD_VERSION 1
@@ -125,3 +126,5 @@ bool bfd_should_process_packet(const __be16 eth_type, const uint8_t ip_proto,
  * provided.  'now' is the current time in milliseoncds. */
 enum bfd_error bfd_process_packet(struct bfd *, void *p, size_t len,
                                   long long int now);
+
+</pre>
