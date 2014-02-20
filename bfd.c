@@ -143,7 +143,7 @@ bfd_set_state(struct bfd *bfd, enum bfd_state state, enum bfd_diag diag,
             bfd->rmt_min_tx = 0;
         }
 
-        if (bfd->state != STATE_UP && bfd->in_decay) {
+        if (bfd->state != STATE_UP && bfd->decay_min_rx) {
             bfd->min_rx = bfd->cfg_min_rx;
             bfd->in_decay = false;
             bfd->decay_rx_count = UINT32_MAX;
@@ -257,7 +257,7 @@ bfd_wait(const struct bfd *bfd)
     long long int ret;
 
     if (!bfd) {
-        return LLONG_MIN;
+        return LLONG_MAX;
     }
 
     if (bfd->flags & FLAG_FINAL) {
@@ -267,7 +267,7 @@ bfd_wait(const struct bfd *bfd)
         if (bfd->state > STATE_DOWN) {
             ret = MIN(bfd->detect_time, ret);
         }
-        if (bfd->state == STATE_UP) {
+        if (bfd->state == STATE_UP && bfd->decay_min_rx) {
             ret = MIN(bfd->decay_detect_time, ret);
         }
     }
@@ -325,8 +325,8 @@ bfd_get_status(const struct bfd *bfd, struct bfd_status *s)
     s->local_state = bfd->state;
     s->local_diag = bfd->diag;
 
-    s->rmt_min_tx = bfd->rmt_mint_tx;
-    s->rmt_min_rx = bfd->rmt_mint_rx;
+    s->rmt_min_tx = bfd->rmt_min_tx;
+    s->rmt_min_rx = bfd->rmt_min_rx;
     s->rmt_flags = bfd->rmt_flags;
     s->rmt_state = bfd->rmt_state;
     s->rmt_diag = bfd->rmt_diag;
@@ -352,7 +352,7 @@ bfd_account_rx(struct bfd *bfd, uint32_t n_pkt)
         bfd->forward_if_rx_data = true;
     }
 
-    if (bfd->decay_min_rx) {
+    if (bfd->decay_min_rx && bfd->decay_rx_count != UINT32_MAX) {
         bfd->decay_rx_count += n_pkt;
     }
 }
