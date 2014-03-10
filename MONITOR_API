@@ -1,0 +1,73 @@
+BFD MONITOR API:
+
+/*
+ * Monitor Module
+ * --------------
+ *
+ * This module abstracts the tunnel monitoring logic and employs max heap
+ * to order the monitoring session.  Design features are listed below:
+ *
+ * - Since Open Vswitch already has a max heap implimentation, the monitor
+ *   module will use it directly.
+ *
+ * - To use the monitor, user must pass in an identifier of the monitored
+ *   interface (void *iface).  For example, 'iface' can be the pointer to the
+ *   actual monitored 'strcut iface' which contains reference to bfd/cfm
+ *   object.  The API functions will return the timed out 'iface', so user
+ *   can get bfd/cfm reference from 'iface' and execute the sending+manage
+ *   loop.  Please refer to the example pseudocode below.
+ *
+ * - The module is not thread-safe and must be protected by a global mutex.
+ *
+ *
+ * Example Pseudocode
+ * ------------------
+ *     // sending+manage loop in Open Vswitch
+ *
+ *     mutex_lock(global_mutex)
+ *     while(monitor_has_timedout_session(current_time_milliseconds)) {
+ *         port = monitor_get_timedout_session();
+ *
+ *         if (port->bfd && bfd_should_send_packet(port->bfd)) {
+ *             bfd_put_packet(port->bfd, pkt);
+ *             send_packet(port, pkt);
+ *         }
+ *         bfd_run(port->bfd);
+ *
+ *         if (port->cfm && cfm_should_send_packet(port->cfm)) {
+ *             cfm_put_packet(port->cfm, pkt);
+ *             send_packet(port, pkt);
+ *         }
+ *         cfm_run(port->cfm);
+ *
+ *         monitor_update_session_timeout(port, MIN(bfd_wait(port->bfd),
+ *                                        cfm_wait(port->cfm)));
+ *     }
+ *     mutex_unlock(global_mutex)
+ *
+ * */
+
+/* API Exposed To User. */
+/* Creates a 'struct mport' and registers the mport to the 'monitor_heap'
+ * and 'monitor_hmap'.  Returns 0 if successful, otherwise, a positive
+ * error number. */
+int monitor_register_session(void *iface);
+
+/* Unregisters the 'struct mport' that contains the 'iface' from
+ * 'monitor_heap' and 'monitor_hmap', and deletes the 'struct mport'.
+ *  Returns 0 if successful, otherwise, a positive error number. */
+int monitor_unregister_session(void *iface);
+
+/* Returns true if the top-of-heap session has timed out. */
+bool monitor_has_timedout_session(long long int now);
+
+/* Returns the 'iface' of the 'mport' of the top-of-heap session. */
+void * monitor_get_timedout_session(void);
+
+/* Updates the priority of the heap node of the 'struct mport' which contains
+ * 'iface' based on the next wakeup time 'next'. */
+int monitor_update_session_timeout(const void *iface, long long int next);
+
+/* Returns the timeout in miiliseconds of the session of top-of-heap
+ * mport. */
+long long int monitor_next_timeout(void);
