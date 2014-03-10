@@ -2,6 +2,7 @@ BFD GENERIC LIBRARY API:
 
 #define BFD_VERSION 1
 #define BFD_PACKET_LEN 24
+#define BFD_DEST_PORT 3784
 
 #define VERS_SHIFT 5
 #define DIAG_MASK 0x1f
@@ -73,6 +74,8 @@ enum bfd_error {
 
 /* Used to configure a BFD session. */
 struct bfd_setting {
+    char *name;                   /* Name of the monitored interface. */
+
     /* Local state variables. */
     uint32_t disc;                /* bfd.LocalDiscr. */
     uint8_t mult;                 /* bfd.DetectMult. */
@@ -81,7 +84,7 @@ struct bfd_setting {
 
     /* Open Vswitch specific settings. */
     bool cpath_down;              /* Set Concatenated Path Down. */
-    bool forwarding_override;     /* Manual override of 'forwarding' status. */
+    int forwarding_override;      /* Manual override of 'forwarding' status. */
     int forward_if_rx_interval;   /* How often to detect forward_if_rx. */
     int decay_min_rx;             /* bfd.min_rx is set to decay_min_rx when */
                                   /* in decay. */
@@ -89,18 +92,24 @@ struct bfd_setting {
 
 /* BFD status. */
 struct bfd_status {
+    char *name;                   /* Name of the monitored interface. */
     bool forwarding;              /* The liveness of bfd session. */
     uint8_t mult;                 /* bfd.DetectMult. */
     bool cpath_down;              /* If cpath_down enabled. */
     uint32_t tx_interval;         /* tx interval in use. */
     uint32_t rx_interval;         /* rx interval in use. */
 
+    uint32_t local_disc;          /* bfd.LocalDiscr. */
     uint32_t local_min_tx;        /* bfd.DesiredMinTxInterval */
     uint32_t local_min_rx;        /* bfd.DesiredMinRxInterval*/
     enum bfd_flags local_flags;   /* Flags sent on messages. */
     enum bfd_state local_state;   /* bfd.SessionState. */
     enum bfd_diag local_diag;     /* bfd.LocalDiag. */
+    long long int detect_time;    /* RFC 5880 6.8.4 Detection time. */
+    long long int last_tx;        /* Last TX time. */
+    long long int next_tx;        /* Next TX time. */
 
+    uint32_t rmt_disc;            /* bfd.RemoteDiscr. */
     uint32_t rmt_min_tx;          /* bfd.RemoteMinTxInterval */
     uint32_t rmt_min_rx;          /* bfd.RemoteMinRxInterval*/
     enum bfd_flags rmt_flags;     /* Flags last received. */
@@ -110,10 +119,16 @@ struct bfd_status {
     uint64_t flap_count;          /* Flap count of forwarding. */
 };
 
-/* A BFD session.  User is not permitted to directly access the variable
+/* A BFD session.  Users are not permitted to directly access the variable
  * of this struct.  For BFD configuration, use the bfd_configure().  For
- * BFD status extraction, use the bfd_get_status(). */
+ * BFD status extraction, use the bfd_get_status().
+ *
+ * User must guarantee the 'name''s memory is retained throughout the
+ * lifetime of the struct.
+ * */
 struct bfd {
+    char *name;                   /* Name of the monitored interface. */
+
     /* Local state variables. */
     uint32_t disc;                /* bfd.LocalDiscr. */
     uint8_t mult;                 /* bfd.DetectMult. */
@@ -161,22 +176,24 @@ struct bfd {
     uint64_t flap_count;          /* Counts bfd forwarding flaps. */
 };
 
-/* Configures bfd using the 'setting'.  Returns 0 if successful, a positive
+/* Configures 'bfd' using the 'setting'.  Returns 0 if successful, a positive
  * error number otherwise. */
 enum bfd_error bfd_configure(struct bfd *, const struct bfd_setting *);
 
-/* Returns the wakeup time of the bfd session. */
+/* Returns the wakeup time of the BFD session.  'now' is the current time in
+ * milliseconds. */
 long long int bfd_wait(const struct bfd *);
 
-/* Updates the bfd sessions status.  Checks decay and forward_if_rx.
- * Initiates the POLL sequence if needed. */
+/* Updates the BFD sessions status.  Checks decay and forward_if_rx.
+ * Initiates the POLL sequence if needed.  'now' is the current time in
+ * milliseconds. */
 void bfd_run(struct bfd *, long long int now);
 
 /* Queries the 'bfd''s status, the function will fill in the
- * 'bfd_status'. */
+ * 'struct bfd_status'. */
 void bfd_get_status(const struct bfd *, struct bfd_status *)
 
-/* Returns true if the interface on which bfd is running may be used to
+/* Returns true if the interface on which BFD is running may be used to
  * forward traffic according to the BFD session state.  'now' is the
  * current time in milliseconds. */
 bool bfd_forwarding(const struct bfd *, long long int now);
@@ -186,45 +203,54 @@ bool bfd_forwarding(const struct bfd *, long long int now);
 void bfd_account_rx(struct bfd *bfd, uint32_t n_pkt);
 
 
-/* For send/recv bfd control packets. */
-/* Returns true if the bfd control packet should be sent for this bfd
+/* For send/recv BFD control packets. */
+/* Returns true if the BFD control packet should be sent for this BFD
  * session.  e.g. tx timeout or POLL flag is on.  'now' is the current
  * time in milliseconds. */
 bool bfd_should_send_packet(const struct bfd *, long long int now);
 
-/* Constructs the bfd packet in payload.  This function assumes that the
- * payload is properly aligned.  'now' is the current time in milliseconds. */
+/* Constructs the BFD control packet in payload.  This function assumes that
+ * the payload is properly aligned.  'now' is the current time in milliseconds.
+ * */
 enum bfd_error bfd_put_packet(struct bfd *, void *p, size_t len,
                               long long int now);
 
-/* Given the packet header entries, check if the packet is bfd control
+/* Given the packet header entries, check if the packet is BFD control
  * packet. */
 bool bfd_should_process_packet(const __be16 eth_type, const uint8_t ip_proto,
                                const __be16 udp_src);
 
-/* Processes the bfd control packet in payload 'p'.  The payload length is
+/* Processes the BFD control packet in payload 'p'.  The payload length is
  * provided.  'now' is the current time in milliseoncds. */
 enum bfd_error bfd_process_packet(struct bfd *, void *p, size_t len,
                                   long long int now);
 
 
 /* Helpers*/
-/* Converts the bfd error code to string. */
+/* Converts the BFD error code to string.
+ * This function is thread-safe and reentrant. */
 char * bfd_error_to_str(enum bfd_error error);
 
-/* Converts the bfd flags to string. */
+/* Per-thread string for parsing the flags. */
+static bfd_thread_local char flag_str[128];
+/* Converts the BFD flags to string.
+ * This function is thread-safe if bfd_thread_local is defined.
+ * This function is non-reentrant. */
 const char * bfd_flag_to_str(enum bfd_flags flags);
 
-/* Converts the bfd state code to string. */
+/* Converts the BFD state code to string.
+ * This function is thread-safe and reentrant. */
 const char * bfd_state_to_str(enum bfd_state state);
 
-/* Converts the bfd diag to string. */
+/* Converts the BFD diag to string.
+ * This function is thread-safe and reentrant. */
 const char * bfd_diag_to_str(enum bfd_diag diag);
 
 
 
 /*
  * libbfd API
+ * ----------
  *
  * This API implements the basic BFD （bidirectional forwarding detection
  * state machine.  The user should notice the following issues:
@@ -236,11 +262,81 @@ const char * bfd_diag_to_str(enum bfd_diag diag);
  *    'struct bfd_msg‘.  User is responsible for adding the headers of
  *    all layers.
  *
- * 3. The libbfd does not provide any multithreading protection.  User is
- *    responsible for using mutex or rwlock in multi access.
+ * 3. The libbfd does not provide any multithreading protection (except some of
+ *    the helper functions are thread-safe and reentrant).  User is responsible
+ *    for using mutex or rwlock in multi access.
  *
  *
- * Open Vswitch specific features:
+ * Platform Specific Macros
+ * ------------------------
+ *
+ * The following functions and macros are used in bfd.c, but due to platform
+ * differences, not implemented.  Users are responsible for bridging the gap
+ * with the correct implementation in the bfd-aux.h file.
+ *
+ *
+ *     Per-Thread Variable Macro
+ *     -------------------------
+ *
+ *     bfd_thread_local
+ *
+ *         To guarantee the thread-safety of the bfd_flag_to_str(), the
+ *         per-thread char buffer is created using this macro for holding the
+ *         parsed output.  Users are responsible for defining this macro.
+ *         e.g. if you are using C11:
+ *
+ *             #include <thread.h>
+ *             #define bfd_thread_local thread_local
+ *
+ *         Please note, the reentrancy is not guaranteed with this per-thread
+ *         macro.
+ *
+ *     Random Number Generation
+ *     ------------------------
+ *
+ *     bfd_get_random()
+ *
+ *         This should be a thread-safe function and returns a random unsigned
+ *         integer, which will be used as the jitter in bfd_set_next_ts().
+ *
+ *     Logging
+ *     -------
+ *
+ *     log-level macros:
+ *
+ *         Users are responsible for supporting the following log levels:
+ *
+ *         WARN   A low-level operation failed, but higher-level subsystems may
+ *                be able to recover.  e.g. BFD control packet format error.
+ *
+ *         INFO   Information that may be useful in retrospect when
+ *                investigating a problem.  e.g. POLL sequence start.
+ *
+ *         DBG    Information useful only to someone with intricate knowledge
+ *                of the system, or that would commonly cause too-voluminous
+ *                log output.  Log messages at this level are not logged by
+ *                default.  e.g. send and recv of BFD control packets.
+ *
+ *     bfd_log(level, format, ...)
+ *
+ *         This function logs the content given in the Variadic Macros "..."
+ *         with the specified 'level'.
+ *
+ *         To reduce logging overhead, users may also implement rate-limiting
+ *         logic, like shown in the following pseudocode:
+ *
+ *             bfd_log(level, format, ...)
+ *             {
+ *                 if (bfd_should_log(level)) {
+ *                     * logging code here. *
+ *                 }
+ *             }
+ *
+ *        Example bfd-aux.h for OVS is provided in bfd-aux_ovs.h as reference.
+ *
+ *
+ * Open Vswitch Specific Features
+ * ------------------------------
  *
  *   - cpath_down:
  *
@@ -276,7 +372,7 @@ const char * bfd_diag_to_str(enum bfd_diag diag);
  *   - forwarding_override:
  *
  *     For testing purpose, '1' means forwarding flag will always be true,
- *     and '0' the opposite.
+ *     and '-1' means always false.
  *
  *   - forwarding_if_rx_interval:
  *

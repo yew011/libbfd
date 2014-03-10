@@ -12,9 +12,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License. */
 
+#include <config.h>
+
+#include "bfd-aux.h"
 #include "bfd.h"
 
 #include <arpa/inet.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,71 +27,6 @@
 #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
 
 
-static bool
-bfd_forwarding__(const struct bfd *bfd, long long int now)
-{
-    bool should_forward = false;
-
-    if (bfd->forwarding_override) {
-        return bfd->forwarding_override;
-    }
-
-    if (bfd->forward_if_rx_interval) {
-        if (!bfd->forward_if_rx_detect_time) {
-            should_forward = bfd->state == STATE_UP ? true : false;
-        } else {
-            should_forward = bfd->forward_if_rx_detect_time > now;
-        }
-    }
-
-    return (bfd->state == STATE_UP
-            || (bfd->forward_if_rx_interval && should_forward))
-           && bfd->rmt_diag != DIAG_PATH_DOWN
-           && bfd->rmt_diag != DIAG_CPATH_DOWN
-           && bfd->rmt_diag != DIAG_RCPATH_DOWN;
-}
-
-/* If there is packet received, sets the 'forward_if_rx_detect_time'
- * to 'forward_if_rx_interval' away from now. */
-static void
-bfd_forward_if_rx(struct bfd *bfd, long long int now)
-{
-    if (bfd->forward_if_rx_data && bfd->forward_if_rx_interval) {
-        bfd->forward_if_rx_detect_time = bfd->forward_if_rx_interval + now;
-        bfd->forward_if_rx_data = false;
-    }
-}
-
-/* Increments the 'flap_count' if there is a change in the
- * forwarding flag value. */
-static void
-bfd_check_forwarding_flap(struct bfd *bfd, long long int now)
-{
-    bool last_forwarding = bfd->last_forwarding;
-
-    bfd->last_forwarding = bfd_forwarding__(bfd, now);
-    if (bfd->last_forwarding != last_forwarding) {
-        bfd->flap_count++;
-    }
-}
-
-/* Decays the 'bfd->min_rx' to 'bfd->decay_min_rx' when number of packets
- * received during the 'decay_min_rx' interval is less than two time
- * of bfd control packets. */
-static void
-bfd_try_decay(struct bfd *bfd, long long int now)
-{
-    if (bfd->state == STATE_UP && bfd->decay_min_rx
-        && now >= bfd->decay_detect_time) {
-        uint32_t expect_rx = 2 * (bfd->decay_min_rx / bfd->min_rx + 1);
-
-        bfd->in_decay = (bfd->decay_rx_count < expect_rx
-                         && bfd->decay_min_rx > bfd->cfg_min_rx);
-        bfd->decay_detect_time = bfd->decay_min_rx + now;
-        bfd->decay_rx_count = 0;
-    }
-}
-
 static long long int
 bfd_min_tx(const struct bfd *bfd)
 {
@@ -118,8 +57,78 @@ static void
 bfd_set_next_tx(struct bfd *bfd)
 {
     long long int interval = bfd_tx_interval(bfd);
-    interval -= interval * (rand() % 26) / 100;
+    interval -= interval * (bfd_get_random() % 26) / 100;
     bfd->next_tx = bfd->last_tx + interval;
+}
+
+
+static bool
+bfd_forwarding__(const struct bfd *bfd, long long int now)
+{
+    bool should_forward = false;
+
+    if (bfd->forwarding_override) {
+        return bfd->forwarding_override == 1;
+    }
+
+    if (bfd->forward_if_rx_interval) {
+        /* The first time after forward_if_rx is enabled. */
+        if (!bfd->forward_if_rx_detect_time) {
+            should_forward = bfd->state == STATE_UP ? true : false;
+        } else {
+            should_forward = bfd->forward_if_rx_detect_time > now;
+        }
+    }
+
+    return (bfd->state == STATE_UP
+            || (bfd->forward_if_rx_interval && should_forward))
+           && bfd->rmt_diag != DIAG_PATH_DOWN
+           && bfd->rmt_diag != DIAG_CPATH_DOWN
+           && bfd->rmt_diag != DIAG_RCPATH_DOWN;
+}
+
+/* If there is packet received, sets the 'forward_if_rx_detect_time'
+ * to MAX('forward_if_rx_interval', 'rx_int') away from now. */
+static void
+bfd_forward_if_rx(struct bfd *bfd, long long int now)
+{
+    if (bfd->forward_if_rx_data && bfd->forward_if_rx_interval) {
+        uint32_t rx_int = bfd->mult * bfd_rx_interval(bfd);
+
+        bfd->forward_if_rx_detect_time = MAX(bfd->forward_if_rx_interval,
+                                             rx_int) + now;
+        bfd->forward_if_rx_data = false;
+    }
+}
+
+/* Increments the 'flap_count' if there is a change in the
+ * forwarding flag value. */
+static void
+bfd_check_forwarding_flap(struct bfd *bfd, long long int now)
+{
+    bool last_forwarding = bfd->last_forwarding;
+
+    bfd->last_forwarding = bfd_forwarding__(bfd, now);
+    if (bfd->last_forwarding != last_forwarding) {
+        bfd->flap_count++;
+    }
+}
+
+/* Decays the 'bfd->min_rx' to 'bfd->decay_min_rx' when number of packets
+ * received during the 'decay_min_rx' interval is less than two time
+ * number of BFD control packets expected to be received. */
+static void
+bfd_try_decay(struct bfd *bfd, long long int now)
+{
+    if (bfd->state == STATE_UP && bfd->decay_min_rx
+        && now >= bfd->decay_detect_time
+        && bfd->decay_min_rx > bfd->cfg_min_rx) {
+        uint32_t expect_rx = 2 * (bfd->decay_min_rx / bfd->min_rx + 1);
+
+        bfd->in_decay = bfd->decay_rx_count < expect_rx;
+        bfd->decay_detect_time = bfd->decay_min_rx + now;
+        bfd->decay_rx_count = 0;
+    }
 }
 
 static void
@@ -131,6 +140,11 @@ bfd_set_state(struct bfd *bfd, enum bfd_state state, enum bfd_diag diag,
     }
 
     if (bfd->state != state || bfd->diag != diag) {
+        bfd_log(BFD_LOG_INFO, "%s: BFD state change: %s->%s"
+                " \"%s\"->\"%s\".", bfd->name, bfd_state_to_str(bfd->state),
+                bfd_state_to_str(state), bfd_diag_to_str(bfd->diag),
+                bfd_diag_to_str(diag));
+
         bfd->state = state;
         bfd->diag = diag;
 
@@ -168,11 +182,35 @@ bfd_poll(struct bfd *bfd)
         bfd->poll_min_rx = bfd->in_decay ? bfd->decay_min_rx : bfd->cfg_min_rx;
         bfd->flags |= FLAG_POLL;
         bfd->next_tx = 0;
+        bfd_log(BFD_LOG_INFO, "%s: Initiating poll sequence", bfd->name);
     }
 }
 
+static void
+bfd_log_msg(enum bfd_log_levels level, char *message, const struct bfd_msg *p,
+            const struct bfd *bfd)
+{
+    bfd_log(level, "%s: %s."
+                   "\n\tvers:%"PRIu8" diag:\"%s\" state:%s mult:%"PRIu8
+                   " length:%"PRIu8
+                   "\n\tflags: %s"
+                   "\n\tmy_disc:0x%"PRIx32" your_disc:0x%"PRIx32
+                   "\n\tmin_tx:%"PRIu32"us (%"PRIu32"ms)"
+                   "\n\tmin_rx:%"PRIu32"us (%"PRIu32"ms)"
+                   "\n\tmin_rx_echo:%"PRIu32"us (%"PRIu32"ms)",
+                   bfd->name, message, p->vers_diag >> VERS_SHIFT,
+                   bfd_diag_to_str(p->vers_diag & DIAG_MASK),
+                   bfd_state_to_str(p->flags & STATE_MASK),
+                   p->mult, p->length,
+                   bfd_flag_to_str(p->flags & FLAGS_MASK),
+                   ntohl(p->my_disc), ntohl(p->your_disc),
+                   ntohl(p->min_tx), ntohl(p->min_tx) / 1000,
+                   ntohl(p->min_rx), ntohl(p->min_rx) / 1000,
+                   ntohl(p->min_rx_echo), ntohl(p->min_rx_echo) / 1000);
+}
+
 
-/* Configures bfd using the 'setting'.  Returns 0 if successful, a positive
+/* Configures 'bfd' using the 'setting'.  Returns 0 if successful, a positive
  * error number otherwise. */
 enum bfd_error
 bfd_configure(struct bfd *bfd, const struct bfd_setting *setting)
@@ -185,6 +223,8 @@ bfd_configure(struct bfd *bfd, const struct bfd_setting *setting)
     if (!bfd || !setting) {
         return BFD_EINVAL;
     }
+
+    bfd->name = setting->name;
 
     if (bfd->state == STATE_ADMIN_DOWN) {
         bfd_set_state(bfd, STATE_DOWN, DIAG_NONE, 0);
@@ -222,7 +262,7 @@ bfd_configure(struct bfd *bfd, const struct bfd_setting *setting)
 
     if (bfd->cpath_down != setting->cpath_down) {
         bfd->cpath_down = setting->cpath_down;
-        bfd_set_state(bfd, bfd->state, DIAG_NONE, 0);
+        bfd_set_state(bfd, bfd->state, DIAG_NONE, LLONG_MAX);
         need_poll = true;
     }
 
@@ -250,7 +290,7 @@ bfd_configure(struct bfd *bfd, const struct bfd_setting *setting)
     return BFD_PASS;
 }
 
-/* Returns the wakeup time of the bfd session. */
+/* Returns the wakeup time of the BFD session. */
 long long int
 bfd_wait(const struct bfd *bfd)
 {
@@ -275,7 +315,7 @@ bfd_wait(const struct bfd *bfd)
     return ret;
 }
 
-/* Updates the bfd sessions status.  Checks decay and forward_if_rx.
+/* Updates the BFD sessions status.  Checks decay and forward_if_rx.
  * Initiates the POLL sequence if needed. */
 void
 bfd_run(struct bfd *bfd, long long int now)
@@ -319,12 +359,17 @@ bfd_get_status(const struct bfd *bfd, struct bfd_status *s)
     s->tx_interval = bfd_tx_interval(bfd);
     s->rx_interval = bfd_rx_interval(bfd);
 
+    s->local_disc = bfd->disc;
     s->local_min_tx = bfd_min_tx(bfd);
     s->local_min_rx = bfd->min_rx;
     s->local_flags = bfd->flags;
     s->local_state = bfd->state;
     s->local_diag = bfd->diag;
+    s->detect_time = bfd->detect_time;
+    s->next_tx = bfd->next_tx;
+    s->last_tx = bfd->last_tx;
 
+    s->rmt_disc = bfd->rmt_disc;
     s->rmt_min_tx = bfd->rmt_min_tx;
     s->rmt_min_rx = bfd->rmt_min_rx;
     s->rmt_flags = bfd->rmt_flags;
@@ -334,7 +379,7 @@ bfd_get_status(const struct bfd *bfd, struct bfd_status *s)
     s->flap_count = bfd->flap_count;
 }
 
-/* Returns true if the interface on which bfd is running may be used to
+/* Returns true if the interface on which BFD is running may be used to
  * forward traffic according to the BFD session state.  'now' is the
  * current time in milliseconds. */
 bool
@@ -357,8 +402,8 @@ bfd_account_rx(struct bfd *bfd, uint32_t n_pkt)
     }
 }
 
-/* For send/recv bfd control packets. */
-/* Returns true if the bfd control packet should be sent for this bfd
+/* For send/recv BFD control packets. */
+/* Returns true if the BFD control packet should be sent for this BFD
  * session.  e.g. tx timeout or POLL flag is on. */
 bool
 bfd_should_send_packet(const struct bfd *bfd, long long int now)
@@ -366,8 +411,8 @@ bfd_should_send_packet(const struct bfd *bfd, long long int now)
     return bfd->flags & FLAG_FINAL || now >= bfd->next_tx;
 }
 
-/* Constructs the bfd packet in payload.  This function assumes that the
- * payload is properly aligned. */
+/* Constructs the BFD control packet in payload.  This function assumes that
+ * the payload is properly aligned. */
 enum bfd_error
 bfd_put_packet(struct bfd *bfd, void *p, size_t len, long long int now)
 {
@@ -389,7 +434,7 @@ bfd_put_packet(struct bfd *bfd, void *p, size_t len, long long int now)
     msg->flags = (bfd->state & STATE_MASK) | bfd->flags;
 
     msg->mult = bfd->mult;
-    msg->length = sizeof *bfd;
+    msg->length = BFD_PACKET_LEN;
     msg->my_disc = htonl(bfd->disc);
     msg->your_disc = htonl(bfd->rmt_disc);
     msg->min_rx_echo = htonl(0);
@@ -410,10 +455,11 @@ bfd_put_packet(struct bfd *bfd, void *p, size_t len, long long int now)
     bfd->last_tx = now;
     bfd_set_next_tx(bfd);
 
+    bfd_log(BFD_LOG_DBG, "%s: Sending BFD Message", bfd->name);
     return BFD_PASS;
 }
 
-/* Given the packet header entries, check if the packet is bfd control
+/* Given the packet header entries, check if the packet is BFD control
  * packet. */
 bool
 bfd_should_process_packet(const __be16 eth_type, const uint8_t ip_proto,
@@ -421,10 +467,10 @@ bfd_should_process_packet(const __be16 eth_type, const uint8_t ip_proto,
 {
     return (eth_type == htons(0x0800) /* IP. */
             && ip_proto == 17         /* UDP. */
-            && udp_dst == htons(3784));
+            && udp_dst == htons(BFD_DEST_PORT));
 }
 
-/* Processes the bfd control packet in payload 'p'.  The payload length is
+/* Processes the BFD control packet in payload 'p'.  The payload length is
  * provided. */
 enum bfd_error
 bfd_process_packet(struct bfd *bfd, void *p, size_t len, long long int now)
@@ -454,31 +500,40 @@ bfd_process_packet(struct bfd *bfd, void *p, size_t len, long long int now)
     rmt_state = msg->flags & STATE_MASK;
     version = msg->vers_diag >> VERS_SHIFT;
 
+    bfd_log_msg(BFD_LOG_DBG, "Received BFD control message", p, bfd);
+
     if (version != BFD_VERSION) {
+        bfd_log_msg(BFD_LOG_WARN, "Incorrect version", p, bfd);
         goto err;
     }
 
     /* Technically this should happen after the length check. We don't support
      * authentication however, so it's simpler to do the check first. */
     if (flags & FLAG_AUTH) {
+        bfd_log_msg(BFD_LOG_WARN, "Authenticated control message with"
+                " authentication disabled", p, bfd);
         goto err;
     }
 
     if (msg->length != BFD_PACKET_LEN) {
+        bfd_log_msg(BFD_LOG_WARN, "Unexpected length", p, bfd);
         if (msg->length < BFD_PACKET_LEN) {
             goto err;
         }
     }
 
     if (!msg->mult) {
+        bfd_log_msg(BFD_LOG_WARN, "Zero multiplier", p, bfd);
         goto err;
     }
 
     if (flags & FLAG_MULTIPOINT) {
+        bfd_log_msg(BFD_LOG_WARN, "Unsupported multipoint flag", p, bfd);
         goto err;
     }
 
     if (!msg->my_disc) {
+        bfd_log_msg(BFD_LOG_WARN, "NULL my_disc", p, bfd);
         goto err;
     }
 
@@ -486,13 +541,15 @@ bfd_process_packet(struct bfd *bfd, void *p, size_t len, long long int now)
     if (pkt_your_disc) {
         /* Technically, we should use the your discriminator field to figure
          * out which 'struct bfd' this packet is destined towards.  That way a
-         * bfd session could migrate from one interface to another
+         * BFD session could migrate from one interface to another
          * transparently.  This doesn't fit in with the OVS structure very
          * well, so in this respect, we are not compliant. */
        if (pkt_your_disc != bfd->disc) {
+           bfd_log_msg(BFD_LOG_WARN, "Incorrect your_disc", p, bfd);
            goto err;
        }
     } else if (rmt_state > STATE_DOWN) {
+        bfd_log_msg(BFD_LOG_WARN, "Null your_disc", p, bfd);
         goto err;
     }
 
@@ -505,6 +562,7 @@ bfd_process_packet(struct bfd *bfd, void *p, size_t len, long long int now)
         bfd->min_tx = bfd->poll_min_tx;
         bfd->min_rx = bfd->poll_min_rx;
         bfd->flags &= ~FLAG_POLL;
+        bfd_log_msg(BFD_LOG_INFO, "Poll sequence terminated", p, bfd);
     }
 
     if (flags & FLAG_POLL) {
@@ -523,12 +581,15 @@ bfd_process_packet(struct bfd *bfd, void *p, size_t len, long long int now)
         if (bfd->next_tx) {
             bfd_set_next_tx(bfd);
         }
+        bfd_log_msg(BFD_LOG_INFO, "New remote min_rx", p, bfd);
     }
 
     bfd->rmt_min_tx = MAX(ntohl(msg->min_tx) / 1000, 1);
     bfd->detect_time = bfd_rx_interval(bfd) * bfd->mult + now;
 
     if (bfd->state == STATE_ADMIN_DOWN) {
+        bfd_log_msg(BFD_LOG_DBG, "Administratively down, dropping control"
+                    " message.", p, bfd);
         goto out;
     }
 
@@ -553,6 +614,8 @@ bfd_process_packet(struct bfd *bfd, void *p, size_t len, long long int now)
         case STATE_UP:
             if (rmt_state <= STATE_DOWN) {
                 bfd_set_state(bfd, STATE_DOWN, DIAG_RMT_DOWN, now);
+                bfd_log_msg(BFD_LOG_INFO, "Remote signaled STATE_DOWN",
+                            p, bfd);
             }
             break;
         case STATE_ADMIN_DOWN:
@@ -569,7 +632,8 @@ err:
 }
 
 /* Helpers. */
-/* Converts the bfd error code to string. */
+/* Converts the BFD error code to string.
+ * This function is thread-safe and reentrant. */
 const char *
 bfd_error_to_str(enum bfd_error error)
 {
@@ -582,12 +646,14 @@ bfd_error_to_str(enum bfd_error error)
     }
 }
 
-/* Converts the bfd flags to string. */
+/* Per-thread string for parsing the flags. */
+static bfd_thread_local char flag_str[128];
+/* Converts the BFD flags to string.
+ * This function is thread-safe if bfd_thread_local is defined.
+ * This function is non-reentrant. */
 const char *
 bfd_flag_to_str(enum bfd_flags flags)
 {
-    static char flag_str[128];
-
     if (!flags) {
         return "none";
     }
@@ -621,7 +687,8 @@ bfd_flag_to_str(enum bfd_flags flags)
     return flag_str;
 }
 
-/* Converts the bfd state code to string. */
+/* Converts the BFD state code to string.
+ * This function is thread-safe and reentrant. */
 const char *
 bfd_state_to_str(enum bfd_state state)
 {
@@ -634,7 +701,8 @@ bfd_state_to_str(enum bfd_state state)
     }
 }
 
-/* Converts the bfd diag to string. */
+/* Converts the BFD diag to string.
+ * This function is thread-safe and reentrant. */
 const char *
 bfd_diag_to_str(enum bfd_diag diag) {
     switch (diag) {

@@ -22,6 +22,7 @@
 
 #define BFD_VERSION 1
 #define BFD_PACKET_LEN 24
+#define BFD_DEST_PORT 3784
 
 #define VERS_SHIFT 5
 #define DIAG_MASK 0x1f
@@ -93,6 +94,8 @@ enum bfd_error {
 
 /* Used to configure a BFD session. */
 struct bfd_setting {
+    char *name;                   /* Name of the monitored interface. */
+
     /* Local state variables. */
     uint32_t disc;                /* bfd.LocalDiscr. */
     uint8_t mult;                 /* bfd.DetectMult. */
@@ -101,7 +104,7 @@ struct bfd_setting {
 
     /* Open Vswitch specific settings. */
     bool cpath_down;              /* Set Concatenated Path Down. */
-    bool forwarding_override;     /* Manual override of 'forwarding' status. */
+    int forwarding_override;      /* Manual override of 'forwarding' status. */
     int forward_if_rx_interval;   /* How often to detect forward_if_rx. */
     int decay_min_rx;             /* bfd.min_rx is set to decay_min_rx when */
                                   /* in decay. */
@@ -109,18 +112,24 @@ struct bfd_setting {
 
 /* BFD status. */
 struct bfd_status {
+    char *name;                   /* Name of the monitored interface. */
     bool forwarding;              /* The liveness of bfd session. */
     uint8_t mult;                 /* bfd.DetectMult. */
     bool cpath_down;              /* If cpath_down enabled. */
     uint32_t tx_interval;         /* tx interval in use. */
     uint32_t rx_interval;         /* rx interval in use. */
 
+    uint32_t local_disc;          /* bfd.LocalDiscr. */
     uint32_t local_min_tx;        /* bfd.DesiredMinTxInterval */
     uint32_t local_min_rx;        /* bfd.DesiredMinRxInterval*/
     enum bfd_flags local_flags;   /* Flags sent on messages. */
     enum bfd_state local_state;   /* bfd.SessionState. */
     enum bfd_diag local_diag;     /* bfd.LocalDiag. */
+    long long int detect_time;    /* RFC 5880 6.8.4 Detection time. */
+    long long int last_tx;        /* Last TX time. */
+    long long int next_tx;        /* Next TX time. */
 
+    uint32_t rmt_disc;            /* bfd.RemoteDiscr. */
     uint32_t rmt_min_tx;          /* bfd.RemoteMinTxInterval */
     uint32_t rmt_min_rx;          /* bfd.RemoteMinRxInterval*/
     enum bfd_flags rmt_flags;     /* Flags last received. */
@@ -132,8 +141,14 @@ struct bfd_status {
 
 /* A BFD session.  Users are not permitted to directly access the variable
  * of this struct.  For BFD configuration, use the bfd_configure().  For
- * BFD status extraction, use the bfd_get_status(). */
+ * BFD status extraction, use the bfd_get_status().
+ *
+ * User must guarantee the 'name''s memory is retained throughout the
+ * lifetime of the struct.
+ * */
 struct bfd {
+    char *name;                   /* Name of the monitored interface. */
+
     /* Local state variables. */
     uint32_t disc;                /* bfd.LocalDiscr. */
     uint8_t mult;                 /* bfd.DetectMult. */
