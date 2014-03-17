@@ -38,9 +38,9 @@ struct mport {
 
     /* Anything that user can use to identify the interface owning the
      * monitored session.  For example, 'iface' can be the pointer to the
-     * actual monitored 'strcut iface' which contains reference to bfd/cfm
+     * actual monitored 'struct iface' which contains reference to bfd/cfm
      * object. */
-    void *iface;
+    const void *iface;
 };
 
 
@@ -61,35 +61,40 @@ mport_find(const void *iface)
 }
 
 
+/* Returns true if the 'monitor_hmap' is not empty. */
+bool
+monitor_has_session(void)
+{
+    return !hmap_is_empty(&monitor_hmap);
+}
+
 /* Creates a 'struct mport' and registers the mport to the 'monitor_heap'
- * and 'monitor_hmap'.  Returns 0 if successful, otherwise, a positive
- * error number. */
-int
-monitor_register_session(void *iface)
+ * and 'monitor_hmap'. */
+void
+monitor_register_session(const void *iface)
 {
     struct mport *mport = mport_find(iface);
 
-    mport = xzalloc(sizeof *mport);
-    mport->iface = iface;
-    heap_insert(&monitor_heap, &mport->heap_node, 0);
-    hmap_insert(&monitor_hmap, &mport->hmap_node, hash_pointer(iface, 0));
-
-    return 0;
+    if (!mport) {
+        mport = xzalloc(sizeof *mport);
+        mport->iface = iface;
+        heap_insert(&monitor_heap, &mport->heap_node, 0);
+        hmap_insert(&monitor_hmap, &mport->hmap_node, hash_pointer(iface, 0));
+    }
 }
 
 /* Unregisters the 'struct mport' that contains the 'iface' from
- * 'monitor_heap' and 'monitor_hmap', and deletes the 'struct mport'.
- *  Returns 0 if successful, otherwise, a positive error number. */
-int
-monitor_unregister_session(void *iface)
+ * 'monitor_heap' and 'monitor_hmap', and deletes the 'struct mport'. */
+void
+monitor_unregister_session(const void *iface)
 {
     struct mport *mport = mport_find(iface);
 
-    heap_remove(&monitor_heap, &mport->heap_node);
-    hmap_remove(&monitor_hmap, &mport->hmap_node);
-    free(mport);
-
-    return 0;
+    if (mport) {
+        heap_remove(&monitor_heap, &mport->heap_node);
+        hmap_remove(&monitor_hmap, &mport->hmap_node);
+        free(mport);
+    }
 }
 
 /* Returns true if the top-of-heap session has timed out. */
@@ -107,7 +112,7 @@ monitor_has_timedout_session(long long int now)
 }
 
 /* Returns the 'iface' of the 'mport' of the top-of-heap session. */
-void *
+const void *
 monitor_get_timedout_session(void)
 {
     struct mport *mport;
@@ -132,7 +137,7 @@ monitor_update_session_timeout(const void *iface, long long int next)
     return 0;
 }
 
-/* Returns the timeout in miiliseconds of the session of top-of-heap
+/* Returns the timeout in milliseconds of the session of top-of-heap
  * mport. */
 long long int
 monitor_next_timeout(void)

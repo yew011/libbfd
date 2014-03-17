@@ -8,7 +8,7 @@ BFD MONITOR API:
  * to order the monitoring session.  Design features are listed below:
  *
  * - Since Open Vswitch already has a max heap implimentation, the monitor
- *   module will use it directly.
+ *   module will use it directly.  Work is being done to make it generic.
  *
  * - To use the monitor, user must pass in an identifier of the monitored
  *   interface (void *iface).  For example, 'iface' can be the pointer to the
@@ -48,15 +48,17 @@ BFD MONITOR API:
  * */
 
 /* API Exposed To User. */
+
+/* Returns true if the 'monitor_hmap' is not empty. */
+bool monitor_has_session(void);
+
 /* Creates a 'struct mport' and registers the mport to the 'monitor_heap'
- * and 'monitor_hmap'.  Returns 0 if successful, otherwise, a positive
- * error number. */
-int monitor_register_session(void *iface);
+ * and 'monitor_hmap'. */
+void monitor_register_session(void *iface);
 
 /* Unregisters the 'struct mport' that contains the 'iface' from
- * 'monitor_heap' and 'monitor_hmap', and deletes the 'struct mport'.
- *  Returns 0 if successful, otherwise, a positive error number. */
-int monitor_unregister_session(void *iface);
+ * 'monitor_heap' and 'monitor_hmap', and deletes the 'struct mport'. */
+void monitor_unregister_session(void *iface);
 
 /* Returns true if the top-of-heap session has timed out. */
 bool monitor_has_timedout_session(long long int now);
