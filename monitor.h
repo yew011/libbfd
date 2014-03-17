@@ -17,11 +17,12 @@
 
 #include <stdbool.h>
 
-int monitor_register_session(void *iface);
-int monitor_unregister_session(void *iface);
+bool monitor_has_session(void);
+void monitor_register_session(const void *iface);
+void monitor_unregister_session(const void *iface);
 
 bool monitor_has_timedout_session(long long int now);
-void * monitor_get_timedout_session(void);
+const void * monitor_get_timedout_session(void);
 int monitor_update_session_timeout(const void *iface, long long int next);
 long long int monitor_next_timeout(void);
 
