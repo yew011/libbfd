@@ -213,4 +213,3 @@ float_up_or_down(struct heap *heap, size_t i)
         float_down(heap, i);
     }
 }
-
