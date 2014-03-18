@@ -13,12 +13,11 @@
  * limitations under the License. */
 
 #include <config.h>
-#include "monitor.h"
 
-#include "hash.h"
-#include "heap.h"
-#include "hmap.h"
-#include "util.h"
+#include "monitor.h"
+#include "monitor-aux.h"
+#include "monitor-heap.h"
+#include "monitor-hmap.h"
 
 /* Converts the time in millisecond to heap priority. */
 #define MSEC_TO_PRIO(TIME) (LLONG_MAX - (TIME))
@@ -26,34 +25,34 @@
 #define PRIO_TO_MSEC(PRIO) (LLONG_MAX - (PRIO))
 
 /* Heap for ordering 'struct mport's based on session wakeup time. */
-static struct heap monitor_heap;
+static struct monitor_heap monitor_heap;
 
 /* Hmap that contains all "struct mport"s. */
-static struct hmap monitor_hmap = HMAP_INITIALIZER(&monitor_hmap);
+static struct monitor_hmap monitor_hmap =
+    MONITOR_HMAP_INITIALIZER(&monitor_hmap);
 
 /* Monitored port/interface. */
 struct mport {
-    struct hmap_node hmap_node;       /* In monitor_hmap. */
-    struct heap_node heap_node;       /* In monitor_heap. */
+    struct monitor_hmap_node hmap_node;       /* In monitor_hmap. */
+    struct monitor_heap_node heap_node;       /* In monitor_heap. */
 
-    /* Anything that user can use to identify the interface owning the
-     * monitored session.  For example, 'iface' can be the pointer to the
-     * actual monitored 'struct iface' which contains reference to bfd/cfm
-     * object. */
-    const void *iface;
+    /* A private pointer that user can use to dereference the monitoring
+     * session e.g. bfd/cfm. */
+    const void *__ptr;
 };
 
 
-/* Tries finding and returning the 'mport' from the monitor_hmap by using
- * the hash value of 'iface'.  If there is no such 'mport', returns NULL. */
+/* Tries finding and returning the 'mport' from the 'monitor_hmap' by using
+ * the hash value of 'ptr'.  If there is no such 'mport', returns NULL. */
 static struct mport *
-mport_find(const void *iface)
+mport_find(const void *ptr)
 {
     struct mport *node;
 
-    HMAP_FOR_EACH_WITH_HASH (node, hmap_node, hash_pointer(iface, 0),
-                             &monitor_hmap) {
-        if (node->iface == iface) {
+    MONITOR_HMAP_FOR_EACH_WITH_HASH (node, hmap_node,
+                                     monitor_hash_pointer(ptr),
+                                     &monitor_hmap) {
+        if (node->__ptr == ptr) {
             return node;
         }
     }
@@ -61,78 +60,71 @@ mport_find(const void *iface)
 }
 
 
-/* Returns true if the 'monitor_hmap' is not empty. */
+/* Returns true if there is session in the 'monitor_hmap'. */
 bool
 monitor_has_session(void)
 {
-    return !hmap_is_empty(&monitor_hmap);
+    return !monitor_hmap_is_empty(&monitor_hmap);
 }
 
-/* Creates a 'struct mport' and registers the mport to the 'monitor_heap'
- * and 'monitor_hmap'. */
+/* Creates a 'struct mport' for 'ptr' and registers the mport to the
+ * 'monitor_heap' and 'monitor_hmap'. */
 void
-monitor_register_session(const void *iface)
+monitor_register_session(const void *ptr)
 {
-    struct mport *mport = mport_find(iface);
+    struct mport *mport = mport_find(ptr);
 
     if (!mport) {
         mport = xzalloc(sizeof *mport);
-        mport->iface = iface;
-        heap_insert(&monitor_heap, &mport->heap_node, 0);
-        hmap_insert(&monitor_hmap, &mport->hmap_node, hash_pointer(iface, 0));
+        mport->__ptr = ptr;
+        monitor_heap_insert(&monitor_heap, &mport->heap_node, 0);
+        monitor_hmap_insert(&monitor_hmap, &mport->hmap_node,
+                            hash_pointer(ptr, 0));
     }
 }
 
-/* Unregisters the 'struct mport' that contains the 'iface' from
+/* Unregisters the 'struct mport' that contains the 'ptr' from
  * 'monitor_heap' and 'monitor_hmap', and deletes the 'struct mport'. */
 void
-monitor_unregister_session(const void *iface)
+monitor_unregister_session(const void *ptr)
 {
-    struct mport *mport = mport_find(iface);
+    struct mport *mport = mport_find(ptr);
 
     if (mport) {
-        heap_remove(&monitor_heap, &mport->heap_node);
-        hmap_remove(&monitor_hmap, &mport->hmap_node);
+        monitor_heap_remove(&monitor_heap, &mport->heap_node);
+        monitor_hmap_remove(&monitor_hmap, &mport->hmap_node);
         free(mport);
     }
 }
 
-/* Returns true if the top-of-heap session has timed out. */
-bool
-monitor_has_timedout_session(long long int now)
+/* Given the current time 'now', returns the '__ptr' of the 'struct mport'
+ * of top-of-heap session, if 'now' is greater than the timeout of the
+ * top-of-heap session.  Otherwise, returns NULL.  */
+const void *
+monitor_get_timedout_session(long long int now)
 {
     long long int prio_now = MSEC_TO_PRIO(now);
 
-    if (!heap_is_empty(&monitor_heap)
-        && heap_max(&monitor_heap)->priority >= prio_now) {
-        return true;
+    if (!monitor_heap_is_empty(&monitor_heap)
+        && monitor_heap_max(&monitor_heap)->priority >= prio_now) {
+        struct mport *mport;
+
+        mport = object_containing(monitor_heap_max(&monitor_heap), mport,
+                                  heap_node);
+        return mport->__ptr;
     }
 
-    return false;
-}
-
-/* Returns the 'iface' of the 'mport' of the top-of-heap session. */
-const void *
-monitor_get_timedout_session(void)
-{
-    struct mport *mport;
-
-    if (heap_is_empty(&monitor_heap)) {
-        return NULL;
-    }
-    mport = OBJECT_CONTAINING(heap_max(&monitor_heap), mport, heap_node);
-
-    return mport->iface;
+    return NULL;
 }
 
 /* Updates the priority of the heap node of the 'struct mport' which contains
- * 'iface' based on the next wakeup time 'next'. */
+ * 'ptr' based on the next wakeup time 'next'. */
 int
-monitor_update_session_timeout(const void *iface, long long int next)
+monitor_update_session_timeout(const void *ptr, long long int next)
 {
-    struct mport *mport = mport_find(iface);
+    struct mport *mport = mport_find(ptr);
 
-    heap_change(&monitor_heap, &mport->heap_node, MSEC_TO_PRIO(next));
+    monitor_heap_change(&monitor_heap, &mport->heap_node, MSEC_TO_PRIO(next));
 
     return 0;
 }
@@ -142,9 +134,9 @@ monitor_update_session_timeout(const void *iface, long long int next)
 long long int
 monitor_next_timeout(void)
 {
-    if (heap_is_empty(&monitor_heap)) {
+    if (monitor_heap_is_empty(&monitor_heap)) {
         return LLONG_MAX;
     } else {
-        return PRIO_TO_MSEC(heap_max(&monitor_heap)->priority);
+        return PRIO_TO_MSEC(monitor_heap_max(&monitor_heap)->priority);
     }
 }
