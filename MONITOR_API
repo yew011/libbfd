@@ -28,17 +28,23 @@ BFD MONITOR API:
  *     while(monitor_has_timedout_session(current_time_milliseconds)) {
  *         port = monitor_get_timedout_session();
  *
- *         if (port->bfd && bfd_should_send_packet(port->bfd)) {
- *             bfd_put_packet(port->bfd, pkt);
- *             send_packet(port, pkt);
+ *         if (port->bfd) {
+ *             if (bfd_should_send_packet(port->bfd)) {
+ *                 bfd_put_packet(port->bfd, pkt);
+ *                 send_packet(port, pkt);
+ *             }
+ *             bfd_run(port->bfd);
+ *             bfd_wait(port->bfd);
  *         }
- *         bfd_run(port->bfd);
  *
- *         if (port->cfm && cfm_should_send_packet(port->cfm)) {
- *             cfm_put_packet(port->cfm, pkt);
- *             send_packet(port, pkt);
+ *         if (port->cfm) {
+ *             if (cfm_should_send_packet(port->cfm)) {
+ *                 cfm_put_packet(port->cfm, pkt);
+ *                 send_packet(port, pkt);
+ *             }
+ *             cfm_run(port->cfm);
+ *             cfm_wait(port->cfm);
  *         }
- *         cfm_run(port->cfm);
  *
  *         monitor_update_session_timeout(port, MIN(bfd_wait(port->bfd),
  *                                        cfm_wait(port->cfm)));
