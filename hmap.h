@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2012, 2013 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2012, 2013, 2014 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,9 +18,9 @@
 #define HMAP_H 1
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
-#include "ovs-atomic.h"
-#include "util.h"
 
 #ifdef  __cplusplus
 extern "C" {
@@ -102,8 +102,6 @@ static inline void hmap_remove(struct hmap *, struct hmap_node *);
 void hmap_node_moved(struct hmap *, struct hmap_node *, struct hmap_node *);
 static inline void hmap_replace(struct hmap *, const struct hmap_node *old,
                                 struct hmap_node *new_node);
-
-struct hmap_node *hmap_random_node(const struct hmap *);
 
 /* Search.
  *
@@ -190,13 +188,10 @@ hmap_capacity(const struct hmap *hmap)
 }
 
 /* Returns true if 'hmap' currently contains no nodes,
- * false otherwise.
- * Note: While hmap in general is not thread-safe without additional locking,
- * hmap_is_empty() is. */
+ * false otherwise. */
 static inline bool
 hmap_is_empty(const struct hmap *hmap)
 {
-    atomic_thread_fence(memory_order_acquire);
     return hmap->n == 0;
 }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2009, 2010, 2012, 2013 Nicira, Inc.
+ * Copyright (c) 2008, 2009, 2010, 2012, 2013, 2014 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,21 +14,11 @@
  * limitations under the License.
  */
 
-#include <config.h>
+#include "monitor-aux.h"
+
 #include "hmap.h"
 #include <stdint.h>
 #include <string.h>
-#include "coverage.h"
-#include "random.h"
-#include "util.h"
-#include "vlog.h"
-
-VLOG_DEFINE_THIS_MODULE(hmap);
-
-COVERAGE_DEFINE(hmap_pathological);
-COVERAGE_DEFINE(hmap_expand);
-COVERAGE_DEFINE(hmap_shrink);
-COVERAGE_DEFINE(hmap_reserve);
 
 /* Initializes 'hmap' as an empty hash table. */
 void
@@ -111,12 +101,6 @@ resize(struct hmap *hmap, size_t new_mask, const char *where)
             hmap_insert_fast(&tmp, node, node->hash);
             count++;
         }
-        if (count > 5) {
-            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(10, 10);
-            COVERAGE_INC(hmap_pathological);
-            VLOG_DBG_RL(&rl, "%s: %d nodes in bucket (%"PRIuSIZE" nodes, %"PRIuSIZE" buckets)",
-                        where, count, hmap->n, hmap->mask + 1);
-        }
     }
     hmap_swap(hmap, &tmp);
     hmap_destroy(&tmp);
@@ -152,7 +136,6 @@ hmap_expand_at(struct hmap *hmap, const char *where)
 {
     size_t new_mask = calc_mask(hmap->n);
     if (new_mask > hmap->mask) {
-        COVERAGE_INC(hmap_expand);
         resize(hmap, new_mask, where);
     }
 }
@@ -167,7 +150,6 @@ hmap_shrink_at(struct hmap *hmap, const char *where)
 {
     size_t new_mask = calc_mask(hmap->n);
     if (new_mask < hmap->mask) {
-        COVERAGE_INC(hmap_shrink);
         resize(hmap, new_mask, where);
     }
 }
@@ -184,7 +166,6 @@ hmap_reserve_at(struct hmap *hmap, size_t n, const char *where)
 {
     size_t new_mask = calc_mask(n);
     if (new_mask > hmap->mask) {
-        COVERAGE_INC(hmap_reserve);
         resize(hmap, new_mask, where);
     }
 }
@@ -200,39 +181,6 @@ hmap_node_moved(struct hmap *hmap,
         bucket = &(*bucket)->next;
     }
     *bucket = node;
-}
-
-/* Chooses and returns a randomly selected node from 'hmap', which must not be
- * empty.
- *
- * I wouldn't depend on this algorithm to be fair, since I haven't analyzed it.
- * But it does at least ensure that any node in 'hmap' can be chosen. */
-struct hmap_node *
-hmap_random_node(const struct hmap *hmap)
-{
-    struct hmap_node *bucket, *node;
-    size_t n, i;
-
-    /* Choose a random non-empty bucket. */
-    for (i = random_uint32(); ; i++) {
-        bucket = hmap->buckets[i & hmap->mask];
-        if (bucket) {
-            break;
-        }
-    }
-
-    /* Count nodes in bucket. */
-    n = 0;
-    for (node = bucket; node; node = node->next) {
-        n++;
-    }
-
-    /* Choose random node from bucket. */
-    i = random_range(n);
-    for (node = bucket; i-- > 0; node = node->next) {
-        continue;
-    }
-    return node;
 }
 
 /* Returns the next node in 'hmap' in hash order, or NULL if no nodes remain in

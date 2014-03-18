@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-#include <config.h>
+#include "monitor-aux.h"
+
 #include "heap.h"
 #include <stdlib.h>
-#include "util.h"
 
 static void put_node(struct heap *, struct heap_node *, size_t i);
 static void swap_nodes(struct heap *, size_t i, size_t j);
