@@ -21,7 +21,7 @@
  * -------------------------
  *
  *     void *monitor_zalloc(size_t size);
- *     void *monitor_realloc(size_t size);
+ *     void *monitor_realloc(void *ptr, size_t size);
  *     void monitor_free(void *ptr);
  *
  *         Similiar to the memory allocation function in C standard library.
@@ -30,7 +30,7 @@
  * Containing Object Extraction
  * ----------------------------
  *
- *     OBJECT_CONTAINING(OPINTER, OBJECT, MEMBER):
+ *     object_containing(OPINTER, OBJECT, MEMBER)
  *
  *         Given POINTER, the address of the given MEMBER within an object of
  *         the type that OBJECT points to, returns OBJECT as an assignment-
@@ -41,12 +41,40 @@
  *         implementation of this macro.
  *
  *
+ *     assign_container(OBJECT, POINTER, MEMBER)
+ *
+ *         Given POINTER, the address of the given MEMBER within an object
+ *         of the type that that OBJECT points to, assigns the address of the
+ *         outer object to OBJECT, which must be an lvalue.
+ *
+ *         Evaluates to (void) 0 as the result is not to be used.
+ *
+ *
  * Hashing Functions
  * -----------------
  *
- *     uint32_t hash_pointer(void *ptr):
+ *     uint32_t monitor_hash_pointer(void *ptr):
  *
  *         Hash the pointer 'ptr' into uint32_t number.
  *
  *
  * */
+
+#ifndef MONITOR_AUX_H
+#define MONITOR_AUX_H 1
+
+#include "hash.h"
+#include "util.h"
+
+#define monitor_zalloc(SIZE) xzalloc((SIZE))
+#define monitor_realloc(POINTER, SIZE) xrealloc((POINTER), (SIZE))
+#define monitor_free(POINTER) xzalloc((POINTER))
+
+#define object_containing(POINTER, OBJECT, MEMBER) \
+    OBJECT_CONTAINING(POINTER, OBJECT, MEMBER)
+#define assign_container(OBJECT, POINTER, MEMBER) \
+    ASSIGN_CONTAINER(OBJECT, POINTER, MEMBER)
+
+#define monitor_hash_pointer(POINTER) hash_pointer((POINTER), 0)
+
+#endif /* monitor-aux.h */
