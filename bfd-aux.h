@@ -1,4 +1,4 @@
-/* Copyright (c) 2013 Nicira, Inc.
+/* Copyright (c) 2013, 2014 Nicira, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -62,34 +62,5 @@
  *                 }
  *             }
  * */
-
-#include "random.h"
-#include "vlog.h"
-
-#define bfd_get_random() random_uint32()
-
-VLOG_DEFINE_THIS_MODULE(bfd);
-static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(20, 20);
-
-/* Compatible with VLOG_LEVELS. */
-enum bfd_log_levels {
-    BFD_LOG_WARN = VLL_WARN,
-    BFD_LOG_INFO = VLL_INFO,
-    BFD_LOG_DBG = VLL_DBG
-};
-
-#define bfd_should_log(LEVEL) !vlog_should_drop(THIS_MODULE, LEVEL, &rl)
-
-static void
-bfd_log(enum bfd_log_levels level, const char *format, ...)
-{
-    if (bfd_should_log((enum vlog_level) level)) {
-        va_list args;
-
-        va_start(args, format);
-        vlog_valist(THIS_MODULE, (enum vlog_level) level, format, args);
-        va_end(args);
-    }
-}
 
 #endif /* bfd-aux.h */
