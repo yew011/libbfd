@@ -15,7 +15,7 @@ BFD MONITOR API:
  *   example, 'ptr' can be the pointer to the actual monitored interface
  *   which contains reference to bfd/cfm object.  The API functions will
  *   return the 'ptr' of the timed out session, so user can get bfd/cfm
- *   reference from 'iface' and execute the sending+manage loop.  Please
+ *   reference from 'ptr' and execute the sending+manage loop.  Please
  *   refer to the example pseudocode below.
  *
  * - The module is not thread-safe and must be protected by a global mutex.
@@ -75,7 +75,7 @@ const void * monitor_get_timedout_session(long long int now);
 
 /* Updates the priority of the heap node of the 'struct mport' which contains
  * 'ptr' based on the next wakeup time 'next'. */
-int monitor_update_session_timeout(const void *iface, long long int next);
+int monitor_update_session_timeout(const void *ptr, long long int next);
 
 /* Returns the timeout in milliseconds of the session of top-of-heap
  * mport. */
