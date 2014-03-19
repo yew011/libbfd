@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include <config.h>
 #include "monitor-aux.h"
 #include "monitor-hmap.h"
 
